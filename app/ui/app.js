@@ -515,11 +515,40 @@ function stopMicTest() {
 }
 $('micTest').addEventListener('click', () => (micTest ? stopMicTest() : startMicTest()));
 
+// ---------- updates ----------
+let update = { status: 'dev' };
+function renderUpdate() {
+  const s = update;
+  $('updVersion').textContent = `Version ${s.version || ''}`.trim();
+  const text = {
+    dev: 'Updates work in the installed app.',
+    idle: '',
+    checking: 'Checking for updates…',
+    current: 'JVoice is up to date.',
+    downloading: `Downloading version ${s.next}… ${s.percent || 0}%`,
+    ready: `Version ${s.next} is ready. JVoice restarts when you finish dictating.`,
+    restarting: `Restarting into version ${s.next}…`,
+    error: s.error || 'The update check failed.',
+  }[s.status] ?? '';
+  $('updStatus').textContent = text;
+  const btn = $('updAction');
+  btn.hidden = s.status === 'dev';
+  btn.textContent = s.status === 'ready' || s.status === 'restarting' ? 'Restart now' : 'Check for updates';
+  btn.disabled = ['checking', 'downloading'].includes(s.status);
+  btn.classList.toggle('primary', s.status === 'ready');
+}
+$('updAction').addEventListener('click', () => {
+  if (update.status === 'ready' || update.status === 'restarting') api.invoke('update:restart');
+  else api.invoke('update:check').catch((err) => toast(err.message, true));
+});
+api.on('update', (s) => { update = s; renderUpdate(); });
+
 // ---------- boot ----------
 (async () => {
   try {
-    const [s, st, info] = await Promise.all([api.invoke('settings:get'), api.invoke('status'), api.invoke('app:info')]);
-    settings = s; status = st;
+    const [s, st, info, up] = await Promise.all([api.invoke('settings:get'), api.invoke('status'), api.invoke('app:info'), api.invoke('update:state')]);
+    settings = s; status = st; update = up;
+    renderUpdate();
     $('ver').textContent = `Version ${info.version}`;
     if (!info.packaged) $('loginHelp').textContent = 'Available in the installed app.';
     $('launchAtLogin').disabled = !info.packaged;

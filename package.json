@@ -1,6 +1,6 @@
 {
   "name": "jvoice",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "author": "Josephivgi",
@@ -11,9 +11,11 @@
     "smoke": "electron . --smoke",
     "test": "node --test test/*.test.cjs",
     "icon": "node scripts/make-icon.cjs",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "release": "node scripts/release.cjs"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "koffi": "^3.3.4",
     "uiohook-napi": "^1.5.5"
   },
@@ -44,7 +46,22 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "JVoice-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Josephivgi",
+        "repo": "JVoice",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Josephivgi/JVoice.git"
   }
 }

@@ -8,6 +8,7 @@ const {
 const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
 const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs');
+const { Updater } = require('./updater.cjs');
 
 let win32 = null;
 try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpers unavailable', err.message); }
@@ -31,7 +32,7 @@ if (RECORD_ARG > 0) {
 app.setAppUserModelId('com.josephivgi.jvoice');
 if (!HEADLESS && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
-let store, mainWin, overlayWin, tray, failedDir;
+let store, mainWin, overlayWin, tray, failedDir, updater;
 const hotkey = new Hotkey({ send: win32 ? win32.sendKeys : null });
 let modelsCache = null;
 
@@ -155,6 +156,8 @@ function buildTrayMenu() {
     { type: 'separator' },
     { label: 'Pause shortcut', type: 'checkbox', checked: hotkey.paused, click: (i) => { hotkey.paused = i.checked; buildTrayMenu(); broadcastStatus(); } },
     { label: 'History', click: () => showMain('history') },
+    ...(app.isPackaged ? [{ label: updater?.state.status === 'ready' ? `Restart to update to ${updater.state.next}` : 'Check for updates',
+      click: () => (updater?.state.status === 'ready' ? updater.restartNow() : (updater?.check(), showMain('settings'))) }] : []),
     { label: 'Settings', click: () => showMain('settings') },
     { type: 'separator' },
     { label: 'Quit JVoice', click: () => { app.isQuitting = true; app.quit(); } },
@@ -508,6 +511,9 @@ function registerIpc() {
   handle('status', () => statusPayload());
   handle('issue:dismiss', () => { reportIssue(null); return true; });
   handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
+  handle('update:state', () => updater?.state ?? { status: 'dev', version: app.getVersion() });
+  handle('update:check', () => updater?.check());
+  handle('update:restart', () => updater?.restartNow() ?? false);
   handle('open:external', (url) => {
     if (!/^https:\/\/(openrouter\.ai|github\.com)\//.test(url)) throw new Error('Blocked link.');
     return shell.openExternal(url);
@@ -661,6 +667,19 @@ app.whenReady().then(async () => {
 
   createOverlay();
   createMainWindow();
+
+  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle' });
+  updater.on('state', (st) => {
+    toMain('update', st);
+    buildTrayMenu();
+    if (st.status === 'restarting') overlayState('updating', { version: st.next }, 0);
+  });
+  updater.on('before-restart', () => {
+    app.isQuitting = true;
+    try { hotkey.stop(); } catch { /* already stopped */ }
+  });
+  updater.start();
+
   tray = new Tray(trayIcon());
   tray.on('click', () => showMain());
   buildTrayMenu();

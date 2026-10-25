@@ -32,7 +32,7 @@ body { display: flex; align-items: center; justify-content: center; }
 
 [data-state="recording"] .dot,
 [data-state="starting"] .dot { display: block; }
-[data-state="transcribing"] .spin, [data-state="improving"] .spin { display: block; }
+[data-state="transcribing"] .spin, [data-state="improving"] .spin, [data-state="updating"] .spin { display: block; }
 [data-state="done"] .ok { display: block; }
 [data-state="error"] .bad, [data-state="cancelled"] .bad { display: block; }
 [data-state="starting"] .dot { animation: none; opacity: .5; }
