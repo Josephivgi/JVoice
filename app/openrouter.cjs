@@ -140,9 +140,17 @@ function applyDictionary(text, entries) {
   return out;
 }
 
+// Scribe marks sounds like [laughter] or [outro jingle]. Those are not words the user said, so they go.
+// Text in round brackets is kept unless the whole transcript is only bracketed sounds, like "(music)".
+function stripSoundTags(text) {
+  let out = String(text).replace(/\s*\[[^\]\n]{1,60}\]\s*/g, ' ');
+  if (/^\s*(\([^)\n]{1,60}\)\s*)+$/.test(out)) out = '';
+  return out.replace(/ {2,}/g, ' ').replace(/ ([.,!?;:])/g, '$1').trim();
+}
+
 function countWords(text) {
   const m = String(text).trim().match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu);
   return m ? m.length : 0;
 }
 
-module.exports = { transcribe, improve, keyInfo, listChatModels, applyDictionary, countWords, buildSystemPrompt, ApiError };
+module.exports = { transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

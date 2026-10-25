@@ -8,6 +8,11 @@ const kernel32 = koffi.load('kernel32.dll');
 const GetForegroundWindow = user32.func('void* __stdcall GetForegroundWindow()');
 const GetWindowThreadProcessId = user32.func('uint32 __stdcall GetWindowThreadProcessId(void*, _Out_ uint32*)');
 const GetAsyncKeyState = user32.func('short __stdcall GetAsyncKeyState(int)');
+const KEYBDINPUT = koffi.struct('KEYBDINPUT', { wVk: 'uint16', wScan: 'uint16', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
+const MOUSEINPUT = koffi.struct('MOUSEINPUT', { dx: 'int32', dy: 'int32', mouseData: 'uint32', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
+const INPUT = koffi.struct('INPUT', { type: 'uint32', u: koffi.union('INPUT_U', { mi: MOUSEINPUT, ki: KEYBDINPUT }) });
+const SendInput = user32.func('uint32 __stdcall SendInput(uint32, const INPUT *, int)');
+const MapVirtualKeyW = user32.func('uint32 __stdcall MapVirtualKeyW(uint32, uint32)');
 const OpenClipboard = user32.func('int __stdcall OpenClipboard(intptr_t)');
 const CloseClipboard = user32.func('int __stdcall CloseClipboard()');
 const EmptyClipboard = user32.func('int __stdcall EmptyClipboard()');
@@ -42,6 +47,16 @@ function foregroundWindow() {
 }
 
 const isKeyDown = (vk) => (GetAsyncKeyState(vk) & 0x8000) !== 0;
+
+// Sends key presses in one SendInput call. keys: [{ vk, up }]. Returns how many Windows accepted.
+const KEYEVENTF_KEYUP = 0x2;
+function sendKeys(keys) {
+  const inputs = keys.map(({ vk, up }) => ({
+    type: 1, // INPUT_KEYBOARD
+    u: { ki: { wVk: vk, wScan: MapVirtualKeyW(vk, 0), dwFlags: up ? KEYEVENTF_KEYUP : 0, time: 0, dwExtraInfo: 0 } },
+  }));
+  return SendInput(inputs.length, inputs, koffi.sizeof(INPUT));
+}
 
 // owner: HWND as a BigInt. Restoring needs a real owner window, or SetClipboardData fails after EmptyClipboard.
 async function withClipboard(fn, owner = 0n) {
@@ -128,4 +143,4 @@ const clipboardSequence = () => GetClipboardSequenceNumber();
 // BrowserWindow.getNativeWindowHandle() returns the HWND bytes.
 const hwndOf = (buf) => (buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0)));
 
-module.exports = { foregroundWindow, isKeyDown, snapshotClipboard, restoreClipboard, clipboardSequence, hwndOf };
+module.exports = { foregroundWindow, isKeyDown, sendKeys, snapshotClipboard, restoreClipboard, clipboardSequence, hwndOf };

@@ -32,7 +32,7 @@ app.setAppUserModelId('com.josephivgi.jvoice');
 if (!HEADLESS && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 let store, mainWin, overlayWin, tray, failedDir;
-const hotkey = new Hotkey();
+const hotkey = new Hotkey({ send: win32 ? win32.sendKeys : null });
 let modelsCache = null;
 
 // ---------- API key (encrypted with Windows DPAPI through safeStorage) ----------
@@ -317,7 +317,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   let cost = 0;
   try {
     const t = await api.transcribe({ key, model: s.sttModel, wav, language: s.language, signal });
-    raw = api.applyDictionary(t.text, dict);
+    raw = api.applyDictionary(api.stripSoundTags(t.text), dict);
     cost += t.cost;
   } catch (err) {
     if (signal?.aborted) throw err;

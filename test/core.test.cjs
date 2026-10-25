@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
-const { applyDictionary, countWords, buildSystemPrompt } = require('../app/openrouter.cjs');
+const { applyDictionary, countWords, buildSystemPrompt, stripSoundTags } = require('../app/openrouter.cjs');
 const { Hotkey, validateCombo, comboLabel, K } = require('../app/hotkey.cjs');
 const { Store } = require('../app/db.cjs');
 
@@ -38,7 +38,7 @@ test('combo validation', () => {
 
 test('hold mode: start on full combo, stop on release, interrupt on extra key', () => {
   const h = new Hotkey({ isKeyDown: null });
-  h.tap = () => {}; // no real key injection in tests
+  // no real key injection in tests
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   const ev = [];
   for (const e of ['start', 'stop', 'interrupt', 'cancel']) h.on(e, () => { ev.push(e); if (e === 'start') h.recording = true; if (e === 'stop') h.recording = false; });
@@ -51,7 +51,7 @@ test('hold mode: start on full combo, stop on release, interrupt on extra key', 
 });
 
 test('hold mode ignores the combo when other keys are already held', () => {
-  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: null });
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   let started = 0; h.on('start', () => started++);
   h.onDown(K.Shift); h.onDown(K.Ctrl); h.onDown(K.Meta);
@@ -59,7 +59,7 @@ test('hold mode ignores the combo when other keys are already held', () => {
 });
 
 test('toggle mode: press to start, press again to stop', () => {
-  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: null });
   h.configure({ combo: [K.Ctrl, K.Shift, K.Space], mode: 'toggle' });
   const ev = [];
   h.on('start', () => { ev.push('start'); h.recording = true; });
@@ -101,17 +101,15 @@ test('our own injected keys are skipped, real keys are not', () => {
   h.on('start', () => { ev.push('start'); h.recording = true; });
   h.on('interrupt', () => ev.push('interrupt'));
   h.on('cancel', () => ev.push('cancel'));
-  h.injected.push({ type: 'down', code: K.F24, until: Date.now() + 1000 }, { type: 'up', code: K.F24, until: Date.now() + 1000 });
-  h.tap = () => {};
   h.onDown(K.Ctrl); h.onDown(K.Meta);
-  h.onDown(K.F24); h.onUp(K.F24); // injected: ignored
+  h.onDown(0); h.onUp(0); // our VK_MASK tap arrives as keycode 0: ignored
   h.onDown(K.D); // real: interrupts right away
   h.onDown(K.Escape);
   assert.deepEqual(ev, ['start', 'interrupt', 'cancel']);
 });
 
 test('releasing one of two held Ctrl keys keeps recording', () => {
-  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: null });
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   const ev = [];
   h.on('start', () => { ev.push('start'); h.recording = true; });
@@ -125,7 +123,7 @@ test('releasing one of two held Ctrl keys keeps recording', () => {
 
 test('modifiers whose key-up was missed are dropped using the real key state', () => {
   const physical = new Set([0x5B]); // only Win is really down
-  const h = new Hotkey({ isKeyDown: (vk) => physical.has(vk) }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: (vk) => physical.has(vk) });
   h.configure({ combo: [K.Meta, K.Space], mode: 'hold' });
   let started = 0; h.on('start', () => started++);
   h.raw.set(K.Shift, Date.now() - 5000); // stale: Windows says Shift is up
@@ -141,7 +139,7 @@ test('waitForModifiersReleased reports a timeout', async () => {
 });
 
 test('a just-pressed modifier is trusted even if Windows already reports it released (queued events)', () => {
-  const h = new Hotkey({ isKeyDown: () => false }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: () => false });
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'toggle' });
   let started = 0; h.on('start', () => started++);
   h.onDown(K.Ctrl); h.onDown(K.Meta); // both handled late, after the user already let go
@@ -150,18 +148,58 @@ test('a just-pressed modifier is trusted even if Windows already reports it rele
 
 test('hook event modifier flags decide for queued events; stale entries still get dropped', () => {
   // Ctrl held long, Win pressed: the event says Ctrl is down, so the live state (already up) is not consulted.
-  const h = new Hotkey({ isKeyDown: () => false }); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: () => false });
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'toggle' });
   let started = 0; h.on('start', () => started++);
   h.raw.set(K.Ctrl, Date.now() - 3000);
   h.onDown(K.Meta, { ctrlKey: true, metaKey: true, shiftKey: false, altKey: false });
   assert.equal(started, 1);
   // A Shift whose key-up was missed: the event says Shift is up, so it is dropped and the combo matches.
-  const g = new Hotkey({ isKeyDown: () => true }); g.tap = () => {};
+  const g = new Hotkey({ isKeyDown: () => true });
   g.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   let s2 = 0; g.on('start', () => s2++);
   g.raw.set(K.Shift, Date.now());
   g.onDown(K.Ctrl, { ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
   g.onDown(K.Meta, { ctrlKey: true, metaKey: true, shiftKey: false, altKey: false });
   assert.equal(s2, 1);
+});
+
+test('the Start-menu mask key is 0xE8, never F24 (Ctrl + Win + F24 toggles the touchpad)', () => {
+  const sent = [];
+  const h = new Hotkey({ isKeyDown: null, send: (keys) => sent.push(...keys) });
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
+  h.on('start', () => { h.recording = true; });
+  h.onDown(K.Ctrl); h.onDown(K.Meta);
+  assert.deepEqual(sent, [{ vk: 0xE8 }, { vk: 0xE8, up: true }]);
+  assert.ok(!sent.some((k) => k.vk === 0x87), 'F24 must never be sent');
+});
+
+test('paste sends Ctrl+V as one batch and the hook skips those events', () => {
+  const batches = [];
+  const h = new Hotkey({ isKeyDown: null, send: (keys) => batches.push(keys) });
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
+  h.paste();
+  assert.deepEqual(batches, [[{ vk: 0x11 }, { vk: 0x56 }, { vk: 0x56, up: true }, { vk: 0x11, up: true }]]);
+  h.onDown(K.Ctrl); h.onDown(K.V); h.onUp(K.V); h.onUp(K.Ctrl);
+  assert.equal(h.raw.size, 0);
+  assert.equal(h.injected.length, 0);
+});
+
+test('a Hotkey without a sender never sends keys', () => {
+  const h = new Hotkey({ isKeyDown: null });
+  assert.equal(h.send, null);
+  h.paste(); h.maskStart();
+});
+
+test('Windows system combos are rejected', () => {
+  assert.match(validateCombo([K.Ctrl, K.Meta, K.F24]), /touchpad/);
+  assert.match(validateCombo([K.Meta, K.Shift, K.F23]), /Copilot/);
+  assert.match(validateCombo([K.Meta, K.L]), /locks/);
+});
+
+test('speech engine sound tags are removed', () => {
+  assert.equal(stripSoundTags('[outro jingle]'), '');
+  assert.equal(stripSoundTags('(music)'), '');
+  assert.equal(stripSoundTags('Hello [laughter] there.'), 'Hello there.');
+  assert.equal(stripSoundTags('Call me (after lunch) please.'), 'Call me (after lunch) please.');
 });

@@ -22,10 +22,18 @@ const sortCombo = (codes) => [...new Set(codes.map(norm))].sort((a, b) => {
 });
 const comboLabel = (codes) => sortCombo(codes).map(keyName);
 
+// Windows shortcuts a dictation combo must never be: holding them would trigger Windows instead.
+const RESERVED = [
+  { keys: [K.Ctrl, K.Meta, K.F24], why: 'Windows uses Ctrl + Win + F24 to turn the touchpad on and off.' },
+  { keys: [K.Meta, K.Shift, K.F23], why: 'Windows uses Win + Shift + F23 for the Copilot key.' },
+  { keys: [K.Meta, K.L], why: 'Win + L locks Windows.' },
+];
+
 // A combo needs at least two keys, or one non-modifier function key (F13 and up are free on most keyboards).
 function validateCombo(codes) {
   const c = sortCombo(codes);
   if (!c.length) return 'Press a key combination.';
+  for (const r of RESERVED) if (r.keys.every((k) => c.includes(k)) && c.length === r.keys.length) return r.why;
   if (c.includes(K.Escape)) return 'Esc is used to cancel a recording. Pick another combo.';
   if (c.length === 1 && MODIFIERS.has(c[0])) return 'A single modifier key would trigger all the time. Add a second key.';
   if (c.length === 1 && !(c[0] >= K.F13 && c[0] <= K.F24)) return 'Use at least two keys, for example Ctrl + Win.';
@@ -37,10 +45,19 @@ function defaultKeyState() {
   try { return require('./win32.cjs').isKeyDown; } catch { return null; }
 }
 
+// Windows virtual keys used for the keys JVoice sends.
+const VK_CONTROL = 0x11, VK_V = 0x56;
+// 0xE8 is unassigned in Windows. Tapping it while Win is held stops Start from opening when Win is
+// released, without triggering anything (AutoHotkey uses the same key). Never use F24 for this:
+// Ctrl + Win + F24 is the Windows touchpad on/off shortcut.
+const VK_MASK = 0xE8;
+
 class Hotkey extends EventEmitter {
-  constructor({ isKeyDown = defaultKeyState() } = {}) {
+  // send: ([{ vk, up }]) => void, sends keys to Windows. Null (the default, and in tests) sends nothing.
+  constructor({ isKeyDown = defaultKeyState(), send = null } = {}) {
     super();
     this.isKeyDown = isKeyDown; // (vk) => boolean, or null when unavailable
+    this.send = send;
     this.combo = [K.Ctrl, K.Meta];
     this.mode = 'hold';
     this.raw = new Map(); // physical keycode -> last keydown time
@@ -107,6 +124,7 @@ class Hotkey extends EventEmitter {
   }
 
   onDown(code, ev) {
+    if (!code) return; // keycode 0: keys with no meaning to the hook, such as our own VK_MASK tap
     if (this.consumeInjected('down', code)) return;
     const now = Date.now();
     this.reconcile(now, code, ev);
@@ -121,8 +139,7 @@ class Hotkey extends EventEmitter {
 
     if (!this.active && this.comboHeld(held) && held.size === this.combo.length) {
       this.active = true;
-      // Tapping an unused key while Win is down stops Windows from opening Start when Win is released.
-      if (this.combo.includes(K.Meta)) this.tap(K.F24);
+      if (this.combo.includes(K.Meta)) this.maskStart();
       if (this.mode === 'toggle') this.emit(this.recording ? 'stop' : 'start');
       else this.emit('start');
     } else if (this.active && !this.combo.includes(n) && this.mode === 'hold') {
@@ -132,6 +149,7 @@ class Hotkey extends EventEmitter {
   }
 
   onUp(code) {
+    if (!code) return;
     if (this.consumeInjected('up', code)) return;
     this.raw.delete(code);
     const held = this.held();
@@ -142,10 +160,9 @@ class Hotkey extends EventEmitter {
     }
   }
 
-  tap(code, modifiers = []) {
-    const until = Date.now() + 1000;
-    for (const c of [...modifiers, code]) this.injected.push({ type: 'down', code: c, until }, { type: 'up', code: c, until });
-    uIOhook.keyTap(code, modifiers);
+  // Keeps Start closed when the user lets go of Win (see VK_MASK).
+  maskStart() {
+    if (this.send) this.send([{ vk: VK_MASK }, { vk: VK_MASK, up: true }]);
   }
 
   modifiersDown() {
@@ -164,7 +181,13 @@ class Hotkey extends EventEmitter {
     return !signal?.aborted;
   }
 
-  paste() { this.tap(K.V, [K.Ctrl]); }
+  // Ctrl+V as one SendInput batch, so the user's own key presses cannot land in the middle of it.
+  paste() {
+    if (!this.send) return;
+    const until = Date.now() + 1000;
+    for (const c of [K.Ctrl, K.V]) this.injected.push({ type: 'down', code: c, until }, { type: 'up', code: c, until });
+    this.send([{ vk: VK_CONTROL }, { vk: VK_V }, { vk: VK_V, up: true }, { vk: VK_CONTROL, up: true }]);
+  }
 }
 
 module.exports = { Hotkey, comboLabel, validateCombo, sortCombo, keyName, K };
