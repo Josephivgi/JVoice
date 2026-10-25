@@ -437,25 +437,39 @@ $('sttModel').addEventListener('change', (e) => save({ sttModel: e.target.value 
 $('language').addEventListener('change', (e) => save({ language: e.target.value }));
 $('maxRecord').addEventListener('change', (e) => save({ maxRecordSeconds: Number(e.target.value) }));
 $('charLimit').addEventListener('change', (e) => save({ charLimit: Number(e.target.value) }));
-// Saved while typing too, so closing the window right after does not lose it.
+// Saved as you type, so the very next dictation already follows the new instructions.
 let customTimer;
-$('aiCustom').addEventListener('input', (e) => { clearTimeout(customTimer); customTimer = setTimeout(() => save({ aiCustomPrompt: e.target.value }, true), 600); });
-$('aiCustom').addEventListener('change', (e) => { clearTimeout(customTimer); save({ aiCustomPrompt: e.target.value }); });
-// A short list of fast, cheap models that clean up dictation well, plus "Other" to search all of them.
+function saveCustom(v) {
+  clearTimeout(customTimer);
+  if (v === settings.aiCustomPrompt) return;
+  $('customSaved').textContent = 'Saving…';
+  save({ aiCustomPrompt: v }, true).then(() => { $('customSaved').textContent = settings.aiCustomPrompt === v ? 'Saved. Your next dictation uses it.' : ''; });
+}
+$('aiCustom').addEventListener('input', (e) => { clearTimeout(customTimer); $('customSaved').textContent = ''; customTimer = setTimeout(() => saveCustom(e.target.value), 300); });
+$('aiCustom').addEventListener('change', (e) => saveCustom(e.target.value));
+// Fast, cheap models that clean up dictation well (each tested end to end), plus "Other" to search all of them.
 const RECOMMENDED = [
-  ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (default)'],
-  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5'],
-  ['google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
-  ['openai/gpt-5.4-mini', 'GPT-5.4 Mini'],
-  ['qwen/qwen3.8-flash', 'Qwen3.8 Flash'],
+  ['DeepSeek', 'deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (default)'],
+  ['DeepSeek', 'deepseek/deepseek-v4-flash', 'DeepSeek V4 Flash'],
+  ['DeepSeek', 'deepseek/deepseek-v4-pro', 'DeepSeek V4 Pro'],
+  ['Anthropic', 'anthropic/claude-haiku-5.5', 'Claude Haiku 5.5'],
+  ['Google', 'google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
+  ['Google', 'google/gemini-3.1-flash-lite', 'Gemini 3.1 Flash Lite'],
+  ['OpenAI', 'openai/gpt-5.4-mini', 'GPT-5.4 Mini'],
+  ['OpenAI', 'openai/gpt-5.4-nano', 'GPT-5.4 Nano'],
+  ['Qwen', 'qwen/qwen3.8-flash', 'Qwen3.8 Flash'],
+  ['Mistral', 'mistralai/mistral-small-2603', 'Mistral Small 4'],
+  ['Moonshot', 'moonshotai/kimi-k2.6', 'Kimi K2.6'],
 ];
 const OTHER = '__other';
 let pickOther = false;
 function renderModelPick() {
   const sel = $('aiModelPreset');
-  const avail = RECOMMENDED.filter(([id]) => !models.length || models.some((m) => m.id === id));
-  sel.replaceChildren(...avail.map(([id, name]) => el('option', { value: id }, name)), el('option', { value: OTHER }, 'Other model…'));
-  if (!avail.some(([id]) => id === settings.aiModel)) pickOther = true;
+  const avail = RECOMMENDED.filter(([, id]) => !models.length || models.some((m) => m.id === id));
+  const groups = [...new Set(avail.map(([g]) => g))].map((g) => el('optgroup', { label: g },
+    avail.filter(([x]) => x === g).map(([, id, name]) => el('option', { value: id }, name))));
+  sel.replaceChildren(...groups, el('option', { value: OTHER }, 'Other model…'));
+  if (!avail.some(([, id]) => id === settings.aiModel)) pickOther = true;
   sel.value = pickOther ? OTHER : settings.aiModel;
   $('aiModelOther').hidden = !pickOther;
   if (document.activeElement !== $('aiModel')) $('aiModel').value = settings.aiModel;
@@ -478,7 +492,7 @@ $('aiModel').addEventListener('change', (e) => {
 });
 $('aiModel').addEventListener('input', renderPrice);
 $('aiModel').addEventListener('blur', (e) => {
-  if (!e.target.value.trim() && RECOMMENDED.some(([id]) => id === settings.aiModel)) { pickOther = false; renderModelPick(); }
+  if (!e.target.value.trim() && RECOMMENDED.some(([, id]) => id === settings.aiModel)) { pickOther = false; renderModelPick(); }
 });
 
 let modelsState = 'idle'; // idle | loading | ready | error

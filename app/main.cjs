@@ -679,6 +679,13 @@ async function runShots(dir) {
           await shot(win, `${theme}-${w}-${page}-changes`);
         }
         if (page === 'settings') {
+          if (process.env.JVOICE_SHOTS_TYPE) {
+            // Types extra instructions like a user would, then reports what was saved (live save check).
+            await win.webContents.executeJavaScript(`(() => { const t = document.getElementById('aiCustom'); t.focus(); t.value = ${JSON.stringify(process.env.JVOICE_SHOTS_TYPE)}; t.dispatchEvent(new Event('input')); })()`);
+            await new Promise((r) => setTimeout(r, 1200));
+            const shown = await win.webContents.executeJavaScript(`document.getElementById('customSaved').textContent`);
+            process.stdout.write(`typed: saved=${JSON.stringify(store.getSettings().aiCustomPrompt)} status=${JSON.stringify(shown)}\n`);
+          }
           for (const y of [700, 1400]) {
             await win.webContents.executeJavaScript(`document.getElementById('main').scrollTop = ${y}`);
             await shot(win, `${theme}-${w}-${page}-scroll${y}`);

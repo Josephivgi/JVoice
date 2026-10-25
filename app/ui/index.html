@@ -218,7 +218,8 @@
               </div>
               <label class="field" id="customWrap">
                 <span id="customLabel">Extra instructions <em>(optional, used with either style)</em></span>
-                <textarea id="aiCustom" rows="3" placeholder="Use British spelling. Write in a friendly tone."></textarea>
+                <textarea id="aiCustom" rows="3" placeholder="Use British spelling. Write in a friendly tone." aria-describedby="customSaved"></textarea>
+                <span class="hint" id="customSaved" role="status" aria-live="polite"></span>
               </label>
               <div class="setting flush">
                 <div class="setting-text"><b>Model</b><span class="muted" id="aiPrice"></span></div>
