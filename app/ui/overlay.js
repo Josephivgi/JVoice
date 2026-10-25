@@ -26,7 +26,23 @@ class Tap extends AudioWorkletProcessor {
 }
 registerProcessor('tap', Tap);`;
 
-let rec = null; // { stream, ctx, node, chunks, startedAt, peak, timer, limitTimer, cancelled }
+let rec = null;
+// One AudioContext with the worklet loaded, made once and kept suspended between recordings.
+// Creating it per recording cost over a second before the first audio arrived.
+let engine = null;
+function ensureEngine() {
+  if (!engine) {
+    engine = (async () => {
+      let ctx;
+      try { ctx = new AudioContext({ sampleRate: TARGET_RATE }); } catch { ctx = new AudioContext(); }
+      const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+      try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      return ctx;
+    })();
+    engine.catch(() => { engine = null; }); // try again on the next recording
+  }
+  return engine;
+} // { stream, ctx, node, chunks, startedAt, peak, timer, limitTimer, cancelled }
 let sfx = null;
 let levels = new Array(BARS).fill(0);
 
@@ -82,34 +98,34 @@ function drawLevels() {
 
 async function start({ id, deviceId, sounds, maxSeconds }) {
   if (rec) teardown();
-  const me = rec = { id, chunks: [], peak: 0, startedAt: Date.now(), sounds };
+  const me = rec = { id, chunks: [], peak: 0, startedAt: Date.now(), requestedAt: Date.now(), sounds };
   const fail = (message) => window.jvoice.send('rec:error', { id, message });
   levels.fill(0);
   render('starting');
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    if (rec !== me) { stream.getTracks().forEach((t) => t.stop()); return; }
-    me.stream = stream;
-    let ctx;
-    try { ctx = new AudioContext({ sampleRate: TARGET_RATE }); } catch { ctx = new AudioContext(); }
-    me.ctx = ctx;
-    const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
-    await ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
+    // Open the mic and wake the audio engine at the same time.
+    const [stream, ctx] = await Promise.all([
+      navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      }).then((st) => { if (rec !== me) st.getTracks().forEach((t) => t.stop()); else me.stream = st; return st; }),
+      ensureEngine().then(async (c) => { await c.resume(); return c; }),
+    ]);
     if (rec !== me) return;
+    me.ctx = ctx;
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'tap');
-    node.port.onmessage = (e) => {
-      if (e.data.flushed) { if (e.data.flushed.length) me.chunks.push(e.data.flushed); me.flushed?.(); return; }
-      const buf = e.data;
+    const take = (buf) => {
+      if (!buf.length) return;
+      if (!me.firstAt) me.firstAt = Date.now();
       me.chunks.push(buf);
       let sum = 0, pk = 0;
       for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); sum += v * v; if (v > pk) pk = v; }
       if (pk > me.peak) me.peak = pk;
-      const rms = Math.sqrt(sum / buf.length);
-      levels.shift(); levels.push(Math.min(1, rms * 9));
+      levels.shift(); levels.push(Math.min(1, Math.sqrt(sum / buf.length) * 9));
+    };
+    node.port.onmessage = (e) => {
+      if (e.data.flushed) { take(e.data.flushed); me.flushed?.(); return; }
+      take(e.data);
     };
     src.connect(node);
     me.node = node; me.src = src;
@@ -140,7 +156,7 @@ function teardown() {
   clearTimeout(r.limitTimer);
   try { r.src && r.src.disconnect(); r.node && r.node.disconnect(); } catch { /* already gone */ }
   if (r.stream) r.stream.getTracks().forEach((t) => t.stop());
-  if (r.ctx) r.ctx.close().catch(() => {});
+  if (r.ctx) r.ctx.suspend().catch(() => {});
   return r;
 }
 
@@ -173,18 +189,18 @@ async function stop({ id }) {
   const r = rec;
   if (!r || r.id !== id) { window.jvoice.send('rec:done', { id, error: 'The microphone never started.' }); return; }
   if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
-  const ms = Date.now() - r.startedAt;
+  const ms = Date.now() - (r.firstAt || r.startedAt);
   const rate = r.ctx.sampleRate;
   // Ask the worklet for its partial buffer and wait for it (or give up after 300 ms).
   await new Promise((res) => { r.flushed = res; r.node.port.postMessage('flush'); setTimeout(res, 300); });
-  if (rec !== r) return; // cancelled or replaced while flushing; main ignores this session now
+  if (rec !== r) { window.jvoice.send('rec:done', { id, cancelled: true }); return; } // tells main the recorder is alive
   teardown();
   beep('stop', r.sounds);
   const total = r.chunks.reduce((n, c) => n + c.length, 0);
   const all = new Float32Array(total);
   let o = 0; for (const c of r.chunks) { all.set(c, o); o += c.length; }
   const pcm = resample(all, rate, TARGET_RATE);
-  window.jvoice.send('rec:done', { id, wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak });
+  window.jvoice.send('rec:done', { id, wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak, lagMs: r.firstAt ? r.firstAt - r.startedAt : -1, ctxState: r.ctx.state, rate: r.ctx.sampleRate, requestedAt: r.requestedAt });
 }
 
 window.jvoice.on('rec:start', start);
@@ -192,3 +208,4 @@ window.jvoice.on('rec:stop', stop);
 window.jvoice.on('rec:cancel', () => { teardown(); });
 window.jvoice.on('overlay:state', ({ state, ...data }) => { if (state !== 'recording') render(state, data); });
 render('hidden');
+ensureEngine().then((c) => c.suspend()).catch(() => {});

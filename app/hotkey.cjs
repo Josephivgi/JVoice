@@ -89,9 +89,11 @@ class Hotkey extends EventEmitter {
   }
 
   // Forget keys whose key-up we never saw (lock screen, UAC prompt, focus change to an elevated app).
+  // Only keys older than a second are checked against the live key state: a fresh entry may belong to
+  // events still queued behind this one, and the live state would already show them released.
   reconcile(now, except) {
     for (const [c, t] of this.raw) {
-      if (c === except) continue;
+      if (c === except || now - t < 1000) continue;
       if (VK[c] && this.isKeyDown) { if (!this.isKeyDown(VK[c])) this.raw.delete(c); }
       else if (now - t > 8000) this.raw.delete(c); // non-modifier keys auto-repeat while held
     }

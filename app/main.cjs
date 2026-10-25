@@ -16,11 +16,18 @@ const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
 const TRANSCRIBE_ARG = process.argv.indexOf('--transcribe');
 const SHOTS_ARG = process.argv.indexOf('--shots');
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || process.argv.includes('--import-key');
+const RECORD_ARG = process.argv.indexOf('--record-test');
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || process.argv.includes('--import-key');
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
 
 if (process.env.JVOICE_USER_DATA) app.setPath('userData', process.env.JVOICE_USER_DATA);
+if (RECORD_ARG > 0) {
+  // Feeds a WAV file to getUserMedia as a fake microphone, so the real recorder code runs without a mic.
+  app.commandLine.appendSwitch('use-fake-device-for-media-stream');
+  app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
+  app.commandLine.appendSwitch('use-file-for-fake-audio-capture', `${path.resolve(process.argv[RECORD_ARG + 1])}%noloop`);
+}
 app.setAppUserModelId('com.josephivgi.jvoice');
 if (!HEADLESS && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
@@ -88,7 +95,11 @@ function showMain(page) {
 }
 
 const OVERLAY_W = 300, OVERLAY_H = 72;
+let overlayReady = false;
+let overlayQueue = [];
 function createOverlay() {
+  overlayReady = false;
+  overlayQueue = [];
   overlayWin = new BrowserWindow({
     width: OVERLAY_W, height: OVERLAY_H, show: false, frame: false, transparent: true,
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
@@ -97,7 +108,19 @@ function createOverlay() {
   });
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   overlayWin.setIgnoreMouseEvents(true);
-  overlayWin.loadFile(path.join(UI, 'overlay.html'));
+  const w = overlayWin;
+  w.webContents.once('did-finish-load', () => {
+    if (w !== overlayWin) return;
+    overlayReady = true;
+    for (const [ch, payload] of overlayQueue.splice(0)) send(w, ch, payload);
+  });
+  w.loadFile(path.join(UI, 'overlay.html'));
+}
+
+// Messages sent before the overlay page loads (first start, or after a restart) are delivered once it is ready.
+function toOverlay(channel, payload) {
+  if (overlayReady) send(overlayWin, channel, payload);
+  else overlayQueue.push([channel, payload]);
 }
 
 function recreateOverlay() {
@@ -114,7 +137,7 @@ function showOverlay() {
 let overlayHideTimer = null;
 function overlayState(state, data = {}, hideAfterMs = 0) {
   clearTimeout(overlayHideTimer);
-  send(overlayWin, 'overlay:state', { state, ...data });
+  toOverlay('overlay:state', { state, ...data });
   if (state !== 'hidden') showOverlay();
   if (hideAfterMs) overlayHideTimer = setTimeout(() => overlayState('hidden'), hideAfterMs);
   else if (state === 'hidden' && overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
@@ -166,6 +189,7 @@ const dictation = {
   startedAt: 0,
   abort: null,
   pendingStop: null, // { id, resolve }
+  watchdog: null, // { id, timer } until the recorder answers rec:stop
   target: null, // foreground window when recording started
 
   setState(s) {
@@ -190,7 +214,7 @@ const dictation = {
     this.setState('recording');
     this.startedAt = Date.now();
     showOverlay();
-    send(overlayWin, 'rec:start', { id, deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds });
+    toOverlay('rec:start', { id, deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds });
   },
 
   interrupt() {
@@ -202,7 +226,7 @@ const dictation = {
     if (this.state === 'idle') return;
     const wasRecording = this.state === 'recording';
     this.session++;
-    if (wasRecording) send(overlayWin, 'rec:cancel');
+    if (wasRecording || this.pendingStop) toOverlay('rec:cancel');
     if (this.abort) { this.abort.abort(); this.abort = null; }
     if (this.pendingStop) { this.pendingStop.resolve(null); this.pendingStop = null; }
     this.setState('idle');
@@ -215,20 +239,23 @@ const dictation = {
     this.setState('processing');
     overlayState('transcribing');
     const p = new Promise((resolve) => { this.pendingStop = { id, resolve }; });
-    send(overlayWin, 'rec:stop', { id });
-    const timer = setTimeout(() => {
-      if (this.pendingStop?.id !== id) return;
-      this.pendingStop.resolve({ id, error: 'The recorder stopped responding, so JVoice restarted it. Try again.' });
+    toOverlay('rec:stop', { id });
+    // Watchdog: if the recorder never answers for this session (even after a cancel), restart it,
+    // so a hung audio thread cannot keep the microphone open.
+    clearTimeout(this.watchdog?.timer);
+    this.watchdog = { id, timer: setTimeout(() => {
+      this.watchdog = null;
+      if (this.pendingStop?.id === id) this.pendingStop.resolve({ id, error: 'The recorder stopped responding, so JVoice restarted it. Try again.' });
       recreateOverlay();
-    }, 5000);
+    }, 5000) };
     p.then((rec) => {
-      clearTimeout(timer);
       if (this.pendingStop?.id === id) this.pendingStop = null;
       if (rec && id === this.session) this.process(id, rec);
     });
   },
 
   onRecorded(rec) {
+    if (this.watchdog && rec?.id === this.watchdog.id) { clearTimeout(this.watchdog.timer); this.watchdog = null; }
     if (this.pendingStop && rec?.id === this.pendingStop.id) this.pendingStop.resolve(rec);
   },
 
@@ -334,24 +361,28 @@ async function output(text, { signal, target } = {}) {
   const released = await hotkey.waitForModifiersReleased(1500, signal);
   if (signal?.aborted) return { pasted: false };
   if (!released) { clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
-  const now = win32 ? win32.foregroundWindow() : null;
-  if (target && now && now.id !== target.id) {
-    clipboard.writeText(text);
-    return { pasted: false, note: 'You switched windows, so the text was copied instead.' };
-  }
+  const sameWindow = () => {
+    if (!target || !win32) return true;
+    const now = win32.foregroundWindow();
+    return !!now && now.id === target.id && now.pid === target.pid;
+  };
+  const switched = { pasted: false, note: 'You switched windows, so the text was copied instead.' };
+  if (!sameWindow()) { clipboard.writeText(text); return switched; }
   let snap = null;
   if (s.restoreClipboard && win32) {
     try { snap = await win32.snapshotClipboard(); } catch { snap = null; }
   }
+  // The snapshot can wait on another app's clipboard lock, so check everything again right before pasting.
   if (signal?.aborted) return { pasted: false };
   clipboard.writeText(text);
+  if (!sameWindow()) return switched;
+  if (hotkey.modifiersDown()) return { pasted: false, note: 'Keys were still held, so the text was copied instead.' };
   const seq = win32 ? win32.clipboardSequence() : 0;
   hotkey.paste();
   if (snap) {
     setTimeout(async () => {
-      // Only put the old clipboard back if nothing else was copied in the meantime.
-      if (win32.clipboardSequence() !== seq) return;
-      try { await win32.restoreClipboard(snap, clipboardOwner()); } catch (err) { console.error('clipboard restore failed', err.message); }
+      // Only put the old clipboard back if nothing else was copied in the meantime (checked under the clipboard lock).
+      try { await win32.restoreClipboard(snap, clipboardOwner(), seq); } catch (err) { console.error('clipboard restore failed', err.message); }
     }, 700);
   }
   return { pasted: true };
@@ -483,6 +514,7 @@ async function runSmoke() {
   const report = { db: false, hook: false, encryption: safeStorage.isEncryptionAvailable(), pages: {} };
   report.db = !!store.getSettings();
   registerIpc();
+  try { report.win32 = !!win32?.foregroundWindow() && typeof win32.clipboardSequence() === 'number'; } catch (err) { report.win32 = false; report.win32Error = err.message; }
   try { hotkey.start(); report.hook = hotkey.started; hotkey.stop(); } catch (err) { report.hookError = err.message; }
   for (const page of ['index.html', 'overlay.html']) {
     const w = new BrowserWindow({ show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
@@ -500,7 +532,7 @@ async function runSmoke() {
     w.destroy();
   }
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-  app.exit(report.db && report.hook && Object.values(report.pages).every((p) => !p.errors.length) ? 0 : 1);
+  app.exit(report.db && report.hook && report.win32 && Object.values(report.pages).every((p) => !p.errors.length) ? 0 : 1);
 }
 
 // Renders every page offscreen to PNGs for UI review. Nothing is shown on screen.
@@ -545,6 +577,25 @@ async function runShots(dir) {
   app.exit(0);
 }
 
+// --record-test <input.wav> <ms> <output.wav>: records through the hidden overlay recorder and saves the WAV.
+async function runRecordTest(ms, outFile) {
+  createOverlay();
+  await new Promise((res) => overlayWin.webContents.once('did-finish-load', res));
+  await new Promise((res) => setTimeout(res, 1500)); // the real app loads the overlay long before the first dictation
+  const done = new Promise((res) => ipcMain.once('rec:done', (_e, rec) => res(rec)));
+  const err = new Promise((res) => ipcMain.once('rec:error', (_e, e) => res({ error: e.message })));
+  send(overlayWin, 'rec:start', { id: 1, deviceId: '', sounds: false, maxSeconds: 60 });
+  await new Promise((res) => setTimeout(res, ms));
+  send(overlayWin, 'rec:stop', { id: 1 });
+  const rec = await Promise.race([done, err, new Promise((res) => setTimeout(() => res({ error: 'timeout' }), 5000))]);
+  if (rec.error) { process.stderr.write(`ERROR: ${rec.error}\n`); return app.exit(1); }
+  const wav = Buffer.from(rec.wav);
+  fs.writeFileSync(outFile, wav);
+  const rate = wav.readUInt32LE(24), channels = wav.readUInt16LE(22), bits = wav.readUInt16LE(34);
+  process.stdout.write(JSON.stringify({ lagMs: rec.lagMs, startupMs: rec.requestedAt ? Date.now() - rec.requestedAt - rec.ms : null, ctxRate: rec.rate, id: rec.id, ms: rec.ms, peak: Number(rec.peak.toFixed(3)), bytes: wav.length, rate, channels, bits, audioSeconds: (wav.length - 44) / (rate * 2) }) + '\n');
+  app.exit(0);
+}
+
 async function runTranscribeFile(file) {
   try {
     if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
@@ -584,6 +635,7 @@ app.whenReady().then(async () => {
       return app.exit(0);
     } catch (err) { process.stderr.write(`ERROR: ${err.message}\n`); return app.exit(1); }
   }
+  if (RECORD_ARG > 0) return runRecordTest(Number(process.argv[RECORD_ARG + 2]) || 4000, path.resolve(process.argv[RECORD_ARG + 3] || 'record-test.wav'));
   if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));
 
   registerIpc();

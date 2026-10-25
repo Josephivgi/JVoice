@@ -128,7 +128,7 @@ test('modifiers whose key-up was missed are dropped using the real key state', (
   const h = new Hotkey({ isKeyDown: (vk) => physical.has(vk) }); h.tap = () => {};
   h.configure({ combo: [K.Meta, K.Space], mode: 'hold' });
   let started = 0; h.on('start', () => started++);
-  h.raw.set(K.Shift, Date.now()); // stale: Windows says Shift is up
+  h.raw.set(K.Shift, Date.now() - 5000); // stale: Windows says Shift is up
   h.onDown(K.Meta); h.onDown(K.Space);
   assert.equal(started, 1);
 });
@@ -138,4 +138,12 @@ test('waitForModifiersReleased reports a timeout', async () => {
   assert.equal(await h.waitForModifiersReleased(60), false);
   const free = new Hotkey({ isKeyDown: () => false });
   assert.equal(await free.waitForModifiersReleased(60), true);
+});
+
+test('a just-pressed modifier is trusted even if Windows already reports it released (queued events)', () => {
+  const h = new Hotkey({ isKeyDown: () => false }); h.tap = () => {};
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'toggle' });
+  let started = 0; h.on('start', () => started++);
+  h.onDown(K.Ctrl); h.onDown(K.Meta); // both handled late, after the user already let go
+  assert.equal(started, 1);
 });
