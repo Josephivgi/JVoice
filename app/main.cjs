@@ -12,7 +12,8 @@ const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs')
 const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
 const TRANSCRIBE_ARG = process.argv.indexOf('--transcribe');
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0;
+const SHOTS_ARG = process.argv.indexOf('--shots');
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
 
@@ -441,6 +442,48 @@ async function runSmoke() {
   app.exit(report.db && report.hook && Object.values(report.pages).every((p) => !p.errors.length) ? 0 : 1);
 }
 
+// Renders every page offscreen to PNGs for UI review. Nothing is shown on screen.
+async function runShots(dir) {
+  const { nativeTheme } = require('electron');
+  fs.mkdirSync(dir, { recursive: true });
+  registerIpc();
+  const shot = async (w, name) => {
+    await new Promise((r) => setTimeout(r, 450));
+    fs.writeFileSync(path.join(dir, `${name}.png`), (await w.webContents.capturePage()).toPNG());
+  };
+  for (const theme of ['dark', 'light']) {
+    nativeTheme.themeSource = theme;
+    for (const [w, h] of [[980, 680], [760, 540]]) {
+      const win = new BrowserWindow({ show: false, width: w, height: h, useContentSize: true, webPreferences: { offscreen: true, preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
+      await win.loadFile(path.join(UI, 'index.html'));
+      for (const page of ['home', 'history', 'dictionary', 'settings']) {
+        win.webContents.send('nav', page);
+        await shot(win, `${theme}-${w}-${page}`);
+        if (page === 'settings') {
+          for (const y of [700, 1400]) {
+            await win.webContents.executeJavaScript(`document.getElementById('main').scrollTop = ${y}`);
+            await shot(win, `${theme}-${w}-${page}-scroll${y}`);
+          }
+        }
+      }
+      win.destroy();
+    }
+    const ov = new BrowserWindow({ show: false, width: OVERLAY_W, height: OVERLAY_H, transparent: true, frame: false, webPreferences: { offscreen: true, preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
+    await ov.loadFile(path.join(UI, 'overlay.html'));
+    const states = [
+      ['recording', `document.getElementById('pill').dataset.state='recording';document.querySelectorAll('.wave i').forEach((b,i)=>b.style.transform='scaleY('+(0.2+0.8*Math.abs(Math.sin(i/2)))+')');document.getElementById('time').textContent='0:07'`],
+      ['transcribing', `render('transcribing')`], ['improving', `render('improving')`],
+      ['done', `render('done',{words:42,pasted:true})`], ['copied', `render('done',{words:1,pasted:false})`],
+      ['error', `render('error',{message:'Your OpenRouter account is out of credits.'})`],
+      ['error-long', `render('error',{message:'Microphone access is blocked. Allow it in Windows privacy settings.'})`],
+    ];
+    for (const [name, js] of states) { await ov.webContents.executeJavaScript(js); await shot(ov, `${theme}-overlay-${name}`); }
+    ov.destroy();
+  }
+  process.stdout.write(`shots written to ${dir}\n`);
+  app.exit(0);
+}
+
 async function runTranscribeFile(file) {
   try {
     if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
@@ -470,6 +513,7 @@ app.whenReady().then(async () => {
 
   if (SMOKE) return runSmoke();
   if (TRANSCRIBE_ARG > 0) return runTranscribeFile(process.argv[TRANSCRIBE_ARG + 1]);
+  if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));
 
   registerIpc();
   applyHotkeySettings();
