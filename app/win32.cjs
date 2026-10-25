@@ -6,6 +6,7 @@ const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 
 const GetForegroundWindow = user32.func('void* __stdcall GetForegroundWindow()');
+const GetClassNameW = user32.func('int __stdcall GetClassNameW(void*, _Out_ uint16*, int)');
 const GetWindowThreadProcessId = user32.func('uint32 __stdcall GetWindowThreadProcessId(void*, _Out_ uint32*)');
 const GetAsyncKeyState = user32.func('short __stdcall GetAsyncKeyState(int)');
 const KEYBDINPUT = koffi.struct('KEYBDINPUT', { wVk: 'uint16', wScan: 'uint16', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
@@ -61,7 +62,8 @@ function processName(pid) {
   } finally { CloseHandle(h); }
 }
 
-// { id, pid, exe } of the window the user is typing in. exe is the lower-case file name, '' if unknown.
+// { id, pid, exe, cls } of the window the user is typing in. exe is the lower-case file name, cls the
+// window class ('' if unknown). Console windows have a console class whatever program runs in them.
 function foregroundWindow() {
   const h = GetForegroundWindow();
   if (!h) return null;
@@ -69,7 +71,9 @@ function foregroundWindow() {
   GetWindowThreadProcessId(h, pid);
   let exe = '';
   try { exe = processName(pid[0]); } catch { /* elevated or exited process */ }
-  return { id: String(koffi.address(h)), pid: pid[0], exe };
+  const buf = new Uint16Array(256);
+  const n = GetClassNameW(h, buf, buf.length);
+  return { id: String(koffi.address(h)), pid: pid[0], exe, cls: n > 0 ? String.fromCharCode(...buf.subarray(0, n)) : '' };
 }
 
 const isKeyDown = (vk) => (GetAsyncKeyState(vk) & 0x8000) !== 0;
@@ -102,10 +106,11 @@ async function snapshotClipboard() {
     if (SENSITIVE.some((f) => f && IsClipboardFormatAvailable(f))) return null;
     const list = [];
     for (let f = EnumClipboardFormats(0); f; f = EnumClipboardFormats(f)) list.push(f);
-    // Windows makes these from CF_UNICODETEXT and CF_DIB on its own, so copying them doubles the work.
+    // Windows makes these from CF_UNICODETEXT and CF_DIBV5 on its own, so copying them doubles the work.
+    // CF_DIBV5 is the one kept, since it holds transparency that CF_DIB loses.
     const synth = new Set();
     if (list.includes(CF_UNICODETEXT)) [CF_TEXT, CF_OEMTEXT, CF_LOCALE].forEach((f) => synth.add(f));
-    if (list.includes(CF_DIB)) synth.add(CF_DIBV5);
+    if (list.includes(CF_DIBV5)) synth.add(CF_DIB);
     const formats = [];
     let total = 0, complete = true;
     for (const f of list) {

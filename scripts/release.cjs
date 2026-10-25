@@ -43,7 +43,8 @@ function fail(msg) { console.error(`release: ${msg}`); process.exit(1); }
 
   const sha512 = await sha512File(files[0]);
   if (!fs.readFileSync(files[2], 'utf8').includes(sha512)) fail('latest.yml does not match the installer.');
-  const key = crypto.createPrivateKey(fs.readFileSync(KEY_FILE));
+  // An encrypted key (openssl pkcs8 -topk8 -v2 aes-256-cbc) is unlocked with JVOICE_SIGNING_PASSPHRASE.
+  const key = crypto.createPrivateKey({ key: fs.readFileSync(KEY_FILE), passphrase: process.env.JVOICE_SIGNING_PASSPHRASE || undefined });
   const signature = crypto.sign(null, signedMessage({ version, file: installer, sha512 }), key).toString('base64');
   if (!verifySignature({ version, file: installer, sha512, signature })) fail('the signing key does not match the key built into the app.');
   const sig = path.join(dist, `${installer}.sig`);

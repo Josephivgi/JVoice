@@ -27,7 +27,7 @@ test('update file hash is the base64 sha512 that latest.yml uses', async () => {
 });
 
 test('pasted text loses control characters and hidden bidi overrides', () => {
-  assert.equal(sanitizeOutput('a\u0007b\u001b[31mc\r\nd‮e⁦f\tg'), 'ab[31mc\nde' + 'f\tg');
+  assert.equal(sanitizeOutput('a\u0007b\u001b[31mc\r\nd\u202Ee\u2066f\tg'), 'ab[31mc\nde' + 'f\tg');
 });
 
 test('text for a terminal becomes one line', () => {
@@ -52,4 +52,10 @@ test('settings cache is cleared on write and callers cannot change it', () => {
   assert.equal(s.updateHistory(row.id, { style: 'raw' }).style, 'raw');
   assert.equal(s.listHistory({ limit: 1 }).length, 1);
   s.close();
+});
+
+test('line separators become new lines, invisible marks go, and console windows count as terminals', () => {
+  assert.equal(sanitizeOutput('a\u2028b\u200Bc\u061Cd'), 'a\nbcd');
+  assert.equal(oneLine('a\u2029b'), 'a b');
+  assert.ok(isTerminal('ssh.exe', 'ConsoleWindowClass') && isTerminal('python.exe', 'CASCADIA_HOSTING_WINDOW_CLASS') && !isTerminal('code.exe', 'Chrome_WidgetWin_1'));
 });

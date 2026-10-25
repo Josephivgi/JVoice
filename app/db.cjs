@@ -52,6 +52,10 @@ class Store {
         heard_as TEXT NOT NULL DEFAULT ''
       );
     `);
+    // Added in 0.2.0: the length limit a dictation was cut to (0 = not cut).
+    if (!this.db.prepare('PRAGMA table_info(history)').all().some((c) => c.name === 'cut')) {
+      this.db.exec('ALTER TABLE history ADD COLUMN cut INTEGER NOT NULL DEFAULT 0');
+    }
     this.q = {
       settings: this.db.prepare('SELECT key, value FROM settings'),
       setSetting: this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
@@ -88,16 +92,16 @@ class Store {
 
   addHistory(row) {
     const r = this.db.prepare(`INSERT INTO history
-      (created_at, status, raw, final, error, style, stt_model, ai_model, duration_ms, words, cost, audio_path)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      (created_at, status, raw, final, error, style, stt_model, ai_model, duration_ms, words, cost, audio_path, cut)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       row.created_at ?? Date.now(), row.status, row.raw ?? '', row.final ?? '', row.error ?? '',
       row.style ?? '', row.stt_model ?? '', row.ai_model ?? '', row.duration_ms ?? 0,
-      row.words ?? 0, row.cost ?? 0, row.audio_path ?? '');
+      row.words ?? 0, row.cost ?? 0, row.audio_path ?? '', row.cut ?? 0);
     return this.getHistoryItem(Number(r.lastInsertRowid));
   }
 
   updateHistory(id, patch) {
-    const allowed = ['status', 'raw', 'final', 'error', 'style', 'ai_model', 'words', 'cost', 'audio_path'];
+    const allowed = ['status', 'raw', 'final', 'error', 'style', 'ai_model', 'words', 'cost', 'audio_path', 'cut'];
     const keys = Object.keys(patch).filter((k) => allowed.includes(k));
     if (!keys.length) return this.getHistoryItem(id);
     this.db.prepare(`UPDATE history SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)

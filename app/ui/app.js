@@ -70,11 +70,15 @@ function wordDiff(a, b) {
   if (A.length * B.length > 4e5) return [b];
   const t = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, ''); // "to," and "To" count as the same word
   const L = Array.from({ length: A.length + 1 }, () => new Uint16Array(B.length + 1));
-  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = t(A[i]) === t(B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = t(A[i]) && t(A[i]) === t(B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   const out = [];
   let i = 0, j = 0;
   while (i < A.length || j < B.length) {
-    if (i < A.length && j < B.length && t(A[i]) === t(B[j])) { out.push(B[j]); i++; j++; }
+    if (i < A.length && j < B.length && t(A[i]) && t(A[i]) === t(B[j])) {
+      // Same word, but punctuation or capitals may differ: that is a fix too.
+      out.push(A[i].trim() === B[j].trim() ? B[j] : el('ins', { class: 'fix', title: `was "${A[i].trim()}"` }, B[j]));
+      i++; j++;
+    }
     else if (j < B.length && (i === A.length || L[i][j + 1] >= L[i + 1][j])) out.push(el('ins', {}, B[j++]));
     else out.push(el('del', {}, A[i++]));
   }
@@ -172,30 +176,29 @@ async function loadHome() {
     $('stats').hidden = st.total === 0;
     $('stCost').textContent = `$${st.cost < 10 ? st.cost.toFixed(st.cost < 0.01 && st.cost > 0 ? 4 : 2) : st.cost.toFixed(2)}`;
     renderHistory($('recent'), items, 'Nothing yet. Your dictations show up here.');
-    renderTryResult(items[0]);
   } catch (err) { toast(err.message, true); }
 }
 
 // After a dictation into the Try box, say what the AI did with it.
-let tryShown = 0;
-function renderTryResult(row) {
+// r: { raw, final, style, aiError, cut } from main, sent right after each dictation.
+function renderTryResult(r) {
   const box = $('tryResult');
-  const fresh = row && row.status === 'done' && Date.now() - row.created_at < 15000 && document.activeElement === $('tryBox') && row.id !== tryShown;
-  if (!fresh) return;
-  tryShown = row.id;
-  const name = styleName(row);
-  if (name === 'No AI') box.replaceChildren(row.error ? 'AI cleanup failed, so you got the text as heard.' : 'AI cleanup is off, so you got the text as heard.');
-  else if (row.raw === row.final) box.replaceChildren(`${name} found nothing to fix.`);
+  if ($('page-home').hidden || document.activeElement !== $('tryBox')) return;
+  const name = STYLE_NAMES[r.style] || 'No AI';
+  const cut = r.cut ? ` Cut to ${r.cut} characters.` : '';
+  if (r.style === 'raw') box.replaceChildren((r.aiError ? 'AI cleanup failed, so you got the text as heard.' : 'AI cleanup is off, so you got the text as heard.') + cut);
+  else if (r.raw === r.final) box.replaceChildren(`${name} found nothing to fix.${cut}`);
   else {
-    const n = changedWords(row.raw, row.final);
-    const diff = el('p', { class: 'diff', hidden: true }, wordDiff(row.raw, row.final));
+    const n = changedWords(r.raw, r.final);
+    const diff = el('p', { class: 'diff', hidden: true }, wordDiff(r.raw, r.final));
     const btn = el('button', { class: 'link', type: 'button', 'aria-expanded': 'false', onclick: () => {
       diff.hidden = !diff.hidden; btn.setAttribute('aria-expanded', String(!diff.hidden)); btn.textContent = diff.hidden ? 'Show changes' : 'Hide changes';
     } }, 'Show changes');
-    box.replaceChildren(`${name} made ${n} ${n === 1 ? 'change' : 'changes'}. `, btn, diff);
+    box.replaceChildren(`${name} made ${n} ${n === 1 ? 'change' : 'changes'}.${cut} `, btn, diff);
   }
   box.hidden = false;
 }
+api.on('dictation:done', renderTryResult);
 $('tryClear').addEventListener('click', () => { $('tryBox').value = ''; $('tryResult').hidden = true; $('tryBox').focus(); });
 
 $('setupForm').addEventListener('submit', (e) => { e.preventDefault(); saveKey($('setupKey'), $('setupMsg'), $('setupSave')); });
@@ -237,11 +240,10 @@ function historyItem(row) {
     } }, svg(ICONS.copy)));
     if (row.raw && row.raw !== row.final) {
       let shown = false;
-      actions.prepend(el('button', { class: 'btn ghost sm', type: 'button', 'aria-pressed': 'false', onclick: (e) => {
+      actions.prepend(el('button', { class: 'btn ghost sm', type: 'button', onclick: (e) => {
         shown = !shown;
         text.replaceChildren(...(shown ? wordDiff(row.raw, row.final) : [row.final]));
         text.classList.toggle('diff', shown);
-        e.currentTarget.setAttribute('aria-pressed', String(shown));
         e.currentTarget.textContent = shown ? 'Hide changes' : 'Show changes';
       } }, 'Show changes'));
     }
@@ -256,6 +258,7 @@ function historyItem(row) {
     failed ? el('span', { class: 'tag failed' }, 'Failed') : el('span', { class: 'tag' }, styleName(row)),
     !failed && row.ai_model && row.raw === row.final ? el('span', { class: 'tag' }, 'No changes needed') : null,
     !failed && row.ai_model ? el('span', {}, shortModel(row.ai_model)) : null,
+    !failed && row.cut ? el('span', { class: 'tag' }, `Cut to ${row.cut}`) : null,
     !failed ? el('span', {}, `${row.words} words`) : null,
     actions);
   return el('li', { class: `item${failed ? ' failed' : ''}` }, meta,
@@ -471,6 +474,9 @@ $('aiModel').addEventListener('change', (e) => {
   save({ aiModel: v });
 });
 $('aiModel').addEventListener('input', renderPrice);
+$('aiModel').addEventListener('blur', (e) => {
+  if (!e.target.value.trim() && RECOMMENDED.some(([id]) => id === settings.aiModel)) { pickOther = false; renderModelPick(); }
+});
 
 let modelsState = 'idle'; // idle | loading | ready | error
 let modelsError = '';
@@ -480,8 +486,9 @@ function renderPrice() {
   const typed = !$('aiModelOther').hidden && $('aiModel').value.trim();
   const m = models.find((x) => x.id === (typed || settings.aiModel));
   if (!m) { $('aiPrice').textContent = modelsState === 'loading' ? 'Loading models…' : 'Type to search every OpenRouter chat model.'; return; }
-  const per = (p) => (p * 1e6 < 1 ? `$${(p * 1e6).toFixed(2)}` : `$${(p * 1e6).toFixed(1)}`);
-  $('aiPrice').textContent = `${m.name}. ${per(m.prompt)} in, ${per(m.completion)} out per million tokens.`;
+  const per = (p) => `$${(p * 1e6).toFixed(2)}`;
+  const price = `${per(m.prompt)} in, ${per(m.completion)} out per million tokens.`;
+  $('aiPrice').textContent = pickOther ? `${m.name}. ${price}` : price; // the preset list already names it
 }
 async function loadModels(force = false) {
   if (modelsState === 'loading' || (modelsState === 'ready' && !force)) return renderPrice();

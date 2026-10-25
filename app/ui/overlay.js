@@ -48,6 +48,7 @@ function ensureEngine() {
   return engine;
 } // { stream, ctx, node, chunks, startedAt, peak, timer, limitTimer, cancelled }
 let sfx = null;
+let tones = 0; // tones playing; the context is suspended when the last one ends
 let levels = new Array(BARS).fill(0);
 
 // The beep context is suspended after each tone; a running AudioContext keeps Windows from sleeping.
@@ -66,7 +67,8 @@ async function beep(kind, on) {
     g.gain.exponentialRampToValueAtTime(0.07, t + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
     o.connect(g).connect(sfx.destination);
-    o.onended = () => { o.disconnect(); g.disconnect(); sfx.suspend().catch(() => {}); };
+    tones++;
+    o.onended = () => { o.disconnect(); g.disconnect(); if (--tones === 0) sfx.suspend().catch(() => {}); };
     o.start(t); o.stop(t + 0.13);
   } catch { /* sound is optional */ }
 }
@@ -84,10 +86,11 @@ function render(state, data = {}) {
     case 'transcribing': label.textContent = 'Transcribing'; break;
     case 'improving': label.textContent = 'Improving'; sub.textContent = STYLE[data.style] || 'AI cleanup'; break;
     case 'done': {
-      label.textContent = data.pasted ? `Pasted ${data.words} ${data.words === 1 ? 'word' : 'words'}` : `Copied ${data.words} ${data.words === 1 ? 'word' : 'words'}`;
+      label.textContent = data.pasted ? `Pasted ${data.words} ${data.words === 1 ? 'word' : 'words'}` : 'Copied. Press Ctrl+V';
       // Say what ran, so a cleanup that found nothing to fix is not mistaken for no cleanup.
-      const ran = !data.style ? '' : data.style === 'raw' ? 'No AI' : `${STYLE[data.style] || 'AI'}${data.changed ? '' : ', no changes'}`;
-      sub.textContent = data.note || [ran, data.pasted ? '' : 'Press Ctrl+V to paste'].filter(Boolean).join('. ');
+      let ran = !data.style ? '' : data.style === 'raw' ? 'No AI' : `${STYLE[data.style] || 'AI'}${data.changed ? '' : ', no changes'}`;
+      if (data.cut) ran += `${ran ? '. ' : ''}Cut to ${data.cut}`;
+      sub.textContent = data.note || ran;
       break;
     }
     case 'error': label.textContent = data.message || 'Something went wrong.'; break;
@@ -124,13 +127,14 @@ async function start({ id, deviceId, sounds, maxSeconds }) {
     ]);
     if (rec !== me) return;
     me.ctx = ctx;
+    me.resampler = makeResampler(ctx.sampleRate, TARGET_RATE);
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'tap');
     // Chunks are kept as 16 kHz 16-bit samples, half the memory of float audio.
     const take = (buf) => {
       if (!buf.length) return;
       if (!me.firstAt) me.firstAt = Date.now();
-      me.chunks.push(toInt16(resample(buf, ctx.sampleRate, TARGET_RATE)));
+      me.chunks.push(toInt16(me.resampler(buf)));
       let sum = 0, pk = 0;
       for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); sum += v * v; if (v > pk) pk = v; }
       if (pk > me.peak) me.peak = pk;
@@ -179,15 +183,26 @@ function teardown() {
   return r;
 }
 
-function resample(data, from, to) {
-  if (from === to) return data;
-  const ratio = from / to, len = Math.floor(data.length / ratio), out = new Float32Array(len);
-  for (let i = 0; i < len; i++) {
-    const start = Math.floor(i * ratio), end = Math.min(data.length, Math.floor((i + 1) * ratio));
-    let s = 0; for (let j = start; j < end; j++) s += data[j];
-    out[i] = s / Math.max(1, end - start);
-  }
-  return out;
+// Averages input samples into 16 kHz output, chunk by chunk. The position carries over between
+// chunks, so no samples are dropped at chunk edges (only used when the device will not run at 16 kHz).
+function makeResampler(from, to) {
+  if (from === to) return (data) => data;
+  const ratio = from / to;
+  let pending = new Float32Array(0), pos = 0; // pos: where the next output sample starts in pending
+  return (data) => {
+    const all = new Float32Array(pending.length + data.length);
+    all.set(pending); all.set(data, pending.length);
+    const out = [];
+    while (pos + ratio <= all.length) {
+      const start = Math.floor(pos), end = Math.floor(pos + ratio);
+      let s = 0; for (let j = start; j < end; j++) s += all[j];
+      out.push(s / Math.max(1, end - start));
+      pos += ratio;
+    }
+    const keep = Math.floor(pos);
+    pending = all.slice(keep); pos -= keep;
+    return Float32Array.from(out);
+  };
 }
 
 function toInt16(samples) {

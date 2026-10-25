@@ -1,10 +1,9 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
-const { pathToFileURL } = require('node:url');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, clipboard, nativeImage, screen,
-  safeStorage, shell, Notification, powerMonitor, session, net,
+  safeStorage, shell, Notification, powerMonitor, session, net, protocol,
 } = require('electron');
 const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
@@ -27,7 +26,21 @@ const IMPORT_KEY = devArg('--import-key') > 0;
 const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || IMPORT_KEY;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
-const UI_URL = pathToFileURL(UI).href + '/';
+// Pages are served from app://jvoice/ (not file://), so file:// can stay locked down by the fuses.
+const UI_URL = 'app://jvoice/';
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+function serveUi() {
+  protocol.handle('app', async (req) => {
+    const u = new URL(req.url);
+    const file = path.normalize(path.join(UI, decodeURIComponent(u.pathname)));
+    if (u.host !== 'jvoice' || !file.startsWith(UI + path.sep)) return new Response('Not found', { status: 404 });
+    try {
+      return new Response(await fs.promises.readFile(file), { headers: { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' } });
+    } catch { return new Response('Not found', { status: 404 }); }
+  });
+}
+const loadPage = (win, page) => win.loadURL(UI_URL + page);
 
 if (DEV && process.env.JVOICE_USER_DATA) app.setPath('userData', process.env.JVOICE_USER_DATA);
 if (RECORD_ARG > 0) {
@@ -93,7 +106,7 @@ function createMainWindow() {
     webPreferences: webPrefs(),
   });
   mainWin.removeMenu();
-  mainWin.loadFile(path.join(UI, 'index.html'));
+  loadPage(mainWin, 'index.html');
   lockDown(mainWin.webContents);
   mainWin.on('close', (e) => {
     if (app.isQuitting) return;
@@ -136,7 +149,7 @@ function createOverlay() {
     overlayReady = true;
     for (const [ch, payload] of overlayQueue.splice(0)) send(w, ch, payload);
   });
-  w.loadFile(path.join(UI, 'overlay.html'));
+  loadPage(w, 'overlay.html');
 }
 
 // Messages sent before the overlay page loads (first start, or after a restart) are delivered once it is ready.
@@ -218,6 +231,7 @@ const dictation = {
 
   setState(s) {
     this.state = s;
+    if (s === 'idle') this.clip = null; // a clipboard copy can be large; never keep it between dictations
     hotkey.recording = s !== 'idle';
     buildTrayMenu();
     broadcastStatus();
@@ -244,12 +258,14 @@ const dictation = {
     session.defaultSession.preconnect({ url: 'https://openrouter.ai', numSockets: 1 });
     this.clip = null;
     if (win32 && s.outputMode === 'paste' && s.restoreClipboard) {
-      setImmediate(async () => {
+      // A short wait keeps a slow clipboard (Office renders on request) from delaying the start.
+      setTimeout(async () => {
+        if (id !== this.session || this.state !== 'recording') return;
         const seq = win32.clipboardSequence();
         let snap = null;
         try { snap = await win32.snapshotClipboard(); } catch { /* clipboard busy: taken again at paste time */ }
-        if (id === this.session) this.clip = { seq, snap };
-      });
+        if (id === this.session && this.state !== 'idle') this.clip = { seq, snap };
+      }, 250);
     }
   },
 
@@ -272,6 +288,8 @@ const dictation = {
   stop() {
     if (this.state !== 'recording') return;
     const id = this.session;
+    // A pre-opened socket that sat unused through a long recording may be closed; open one again.
+    session.defaultSession.preconnect({ url: 'https://openrouter.ai', numSockets: 1 });
     this.setState('processing');
     overlayState('transcribing');
     const p = new Promise((resolve) => { this.pendingStop = { id, resolve }; });
@@ -334,8 +352,9 @@ const dictation = {
       toMain('history:changed');
       if (ac.signal.aborted || !current()) return;
       if (lastIssue && lastIssue.action !== 'history') reportIssue(null);
-      const note = out.note || (result.aiError ? 'AI cleanup failed, so the raw text was used.' : result.cut ? `Cut to ${result.cut} characters.` : '');
-      overlayState('done', { words: result.words, pasted: out.pasted, note, style: result.style, changed: result.changed }, note ? 3000 : 1500);
+      const note = out.note || (result.aiError ? 'AI cleanup failed, so the raw text was used.' : '');
+      overlayState('done', { words: result.words, pasted: out.pasted, note, style: result.style, changed: result.changed, cut: result.cut }, note || result.cut ? 3000 : 1500);
+      toMain('dictation:done', { raw: result.raw, final: result.final, style: result.style, aiError: result.aiError, cut: result.cut });
     } catch (err) {
       if (ac.signal.aborted || !current()) return;
       fail(err.message, 3600);
@@ -396,7 +415,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   const words = api.countWords(final);
   const style = s.aiEnabled && !aiError ? s.aiStyle : 'raw';
   if (s.keepHistory && final) {
-    const fields = { status: 'done', raw, final, style, error: aiError ? `AI cleanup failed: ${aiError}` : '', ai_model: style !== 'raw' ? s.aiModel : '', words, cost };
+    const fields = { status: 'done', raw, final, style, cut, error: aiError ? `AI cleanup failed: ${aiError}` : '', ai_model: style !== 'raw' ? s.aiModel : '', words, cost };
     if (historyId) {
       const old = store.getHistoryItem(historyId);
       if (old?.audio_path) removeAudio(old.audio_path);
@@ -422,7 +441,7 @@ async function output(text, { signal, target, clip } = {}) {
   const s = store.getSettings();
   if (s.outputMode !== 'paste') { clipboard.writeText(text); return { pasted: false }; }
   let note = '';
-  if (target && api.isTerminal(target.exe) && /\n/.test(text)) {
+  if (target && api.isTerminal(target.exe, target.cls) && /[\n\u2028\u2029]/.test(text)) {
     text = api.oneLine(text);
     note = 'Pasted as one line, since this is a terminal.';
   }
@@ -446,7 +465,7 @@ async function output(text, { signal, target, clip } = {}) {
   if (signal?.aborted) return { pasted: false };
   // Text that is only on the clipboard for the paste stays out of Windows clipboard history.
   let written = false;
-  if (win32 && snap) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
+  if (win32) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
   if (!written) clipboard.writeText(text);
   if (!sameWindow()) { if (written) clipboard.writeText(text); return switched; }
   if (hotkey.modifiersDown()) { if (written) clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
@@ -614,7 +633,7 @@ async function runSmoke() {
     const w = new BrowserWindow({ show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
     const errors = [];
     w.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message); });
-    try { await w.loadFile(path.join(UI, page)); } catch (err) {
+    try { await loadPage(w, page); } catch (err) {
       report.pages[page] = { errors: [`load failed: ${err.message}`] };
       w.destroy();
       continue;
@@ -646,7 +665,7 @@ async function runShots(dir) {
     nativeTheme.themeSource = theme;
     for (const [w, h] of [[980, 680], [760, 540]]) {
       const win = new BrowserWindow({ show: false, width: w, height: h, useContentSize: true, webPreferences: { offscreen: true, preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
-      await win.loadFile(path.join(UI, 'index.html'));
+      await loadPage(win, 'index.html');
       for (const page of ['home', 'history', 'dictionary', 'settings']) {
         win.webContents.send('nav', page);
         await shot(win, `${theme}-${w}-${page}`);
@@ -664,7 +683,7 @@ async function runShots(dir) {
       win.destroy();
     }
     const ov = new BrowserWindow({ show: false, width: OVERLAY_W, height: OVERLAY_H, transparent: true, frame: false, webPreferences: { offscreen: true, preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
-    await ov.loadFile(path.join(UI, 'overlay.html'));
+    await loadPage(ov, 'overlay.html');
     const states = [
       ['recording', `document.getElementById('pill').dataset.state='recording';document.querySelectorAll('.wave i').forEach((b,i)=>b.style.transform='scaleY('+(0.2+0.8*Math.abs(Math.sin(i/2)))+')');document.getElementById('time').textContent='0:07'`],
       ['transcribing', `render('transcribing')`], ['improving', `render('improving')`],
@@ -717,6 +736,7 @@ app.on('second-instance', () => showMain());
 app.on('window-all-closed', (e) => e.preventDefault());
 
 app.whenReady().then(async () => {
+  serveUi();
   store = new Store(path.join(app.getPath('userData'), 'jvoice.db'));
   failedDir = path.join(app.getPath('userData'), 'failed-audio');
   fs.mkdirSync(failedDir, { recursive: true });

@@ -8,7 +8,7 @@ const INVOKE = new Set([
   'app:info', 'open:external', 'open:mic-settings', 'issue:dismiss',
   'update:state', 'update:check', 'update:restart',
 ]);
-const EVENTS = new Set(['nav', 'status', 'update', 'history:changed', 'hotkey:capture', 'overlay:state', 'rec:start', 'rec:stop', 'rec:cancel']);
+const EVENTS = new Set(['nav', 'status', 'update', 'dictation:done', 'history:changed', 'hotkey:capture', 'overlay:state', 'rec:start', 'rec:stop', 'rec:cancel']);
 const SEND = new Set(['rec:done', 'rec:error', 'rec:limit']);
 
 contextBridge.exposeInMainWorld('jvoice', {

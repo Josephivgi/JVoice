@@ -111,13 +111,15 @@ async function improve({ key, model, text, style, customPrompt = '', terms = [],
       { role: 'user', content: `<dictation>\n${text}\n</dictation>` },
     ],
   };
+  // UTF-8 bytes, not characters: Chinese or Japanese text is about one token per character.
+  const maxTokens = Buffer.byteLength(String(text), 'utf8');
   const send = (reasonOff) => request('/chat/completions', {
     key, method: 'POST', timeoutMs: improveTimeout(text), signal,
     // Cleanup needs no thinking, and reasoning only adds seconds before the paste. The token cap
     // leaves room for reasoning on models that insist on it.
     body: reasonOff
-      ? { ...body, reasoning: { effort: 'none' }, max_tokens: Math.ceil(String(text).length / 2) + 512 }
-      : { ...body, reasoning: { effort: 'low' }, max_tokens: Math.ceil(String(text).length / 2) + 4096 },
+      ? { ...body, reasoning: { effort: 'none' }, max_tokens: maxTokens + 512 }
+      : { ...body, reasoning: { effort: 'low' }, max_tokens: maxTokens + 4096 },
   });
   let json;
   try { json = await send(!mustReason.has(model)); } catch (err) {
@@ -125,6 +127,8 @@ async function improve({ key, model, text, style, customPrompt = '', terms = [],
     mustReason.add(model);
     json = await send(false);
   }
+  // A reply cut off at the token cap would drop the end of what the user said; use the raw text instead.
+  if (json?.choices?.[0]?.finish_reason === 'length') throw new ApiError('The AI reply was cut off.', 0);
   let out = json?.choices?.[0]?.message?.content;
   if (Array.isArray(out)) out = out.map((p) => p?.text ?? '').join('');
   out = String(out ?? '').trim()
@@ -191,14 +195,16 @@ function capLength(text, limit) {
 function sanitizeOutput(text) {
   return String(text)
     .replace(/\r\n?/g, '\n')
-    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F‪-‮⁦-⁩]/g, '');
+    .replace(/[\u2028\u2029]/g, '\n')
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '');
 }
 
 // Consoles run each pasted line as a command, so text for a terminal goes in as one line.
 const TERMINALS = new Set(['cmd.exe', 'powershell.exe', 'pwsh.exe', 'windowsterminal.exe', 'wt.exe', 'conhost.exe',
   'openconsole.exe', 'wsl.exe', 'bash.exe', 'mintty.exe', 'alacritty.exe', 'wezterm-gui.exe', 'putty.exe', 'kitty.exe']);
-const isTerminal = (exe) => TERMINALS.has(String(exe || '').toLowerCase());
-const oneLine = (text) => String(text).replace(/\s*\n+\s*/g, ' ').trim();
+const TERMINAL_CLASSES = new Set(['ConsoleWindowClass', 'CASCADIA_HOSTING_WINDOW_CLASS', 'PseudoConsoleWindow', 'mintty', 'PuTTY']);
+const isTerminal = (exe, cls = '') => TERMINALS.has(String(exe || '').toLowerCase()) || TERMINAL_CLASSES.has(cls);
+const oneLine = (text) => String(text).replace(/\s*[\n\u2028\u2029]+\s*/g, ' ').trim();
 
 function countWords(text) {
   const m = String(text).trim().match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu);
