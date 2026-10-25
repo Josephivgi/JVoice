@@ -1,0 +1,59 @@
+/* JVoice design tokens. One accent (cobalt); red, green and amber are status colors only. */
+:root {
+  color-scheme: dark;
+  --bg: oklch(0.19 0.008 260);
+  --surface: oklch(0.225 0.009 260);
+  --surface-2: oklch(0.26 0.01 260);
+  --surface-3: oklch(0.30 0.011 260);
+  --border: oklch(0.32 0.01 260);
+  --border-strong: oklch(0.40 0.012 260);
+  --text: oklch(0.95 0.005 260);
+  --text-2: oklch(0.76 0.01 260);
+  --text-3: oklch(0.70 0.012 260);
+  --accent: oklch(0.66 0.16 258);
+  --accent-hover: oklch(0.71 0.15 258);
+  --accent-fg: oklch(0.99 0 0);
+  --accent-soft: oklch(0.66 0.16 258 / 0.16);
+  --focus: oklch(0.74 0.14 258);
+  --danger: oklch(0.66 0.19 25);
+  --danger-soft: oklch(0.66 0.19 25 / 0.14);
+  --success: oklch(0.74 0.14 155);
+  --warn: oklch(0.80 0.13 80);
+  --warn-soft: oklch(0.80 0.13 80 / 0.12);
+
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
+
+  --fs-xs: 11.5px; --fs-sm: 12.5px; --fs-md: 13.5px; --fs-lg: 16px; --fs-xl: 22px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --control-h: 32px;
+  --shadow-pop: 0 10px 30px oklch(0 0 0 / 0.45), 0 1px 0 oklch(1 0 0 / 0.04) inset;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: oklch(0.975 0.003 260);
+    --surface: oklch(1 0 0);
+    --surface-2: oklch(0.965 0.004 260);
+    --surface-3: oklch(0.93 0.006 260);
+    --border: oklch(0.90 0.006 260);
+    --border-strong: oklch(0.82 0.008 260);
+    --text: oklch(0.22 0.01 260);
+    --text-2: oklch(0.42 0.012 260);
+    --text-3: oklch(0.50 0.012 260);
+    --accent: oklch(0.53 0.18 258);
+    --accent-hover: oklch(0.48 0.18 258);
+    --accent-soft: oklch(0.53 0.18 258 / 0.10);
+    --focus: oklch(0.53 0.18 258);
+    --danger: oklch(0.55 0.2 25);
+    --danger-soft: oklch(0.55 0.2 25 / 0.10);
+    --success: oklch(0.55 0.14 155);
+    --warn: oklch(0.55 0.12 70);
+    --warn-soft: oklch(0.75 0.13 80 / 0.18);
+    --shadow-pop: 0 10px 30px oklch(0.2 0.02 260 / 0.18);
+  }
+}

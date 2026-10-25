@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream: blob:">
+  <title>JVoice</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="side" aria-label="Main">
+      <div class="brand">
+        <img src="../../assets/icon.png" alt="" width="26" height="26">
+        <span>JVoice</span>
+      </div>
+      <button class="nav" data-page="home" aria-current="page">
+        <svg viewBox="0 0 20 20"><path d="M3.5 9 10 3.5 16.5 9v7a1 1 0 0 1-1 1h-3v-5h-5v5h-3a1 1 0 0 1-1-1z"/></svg>Home</button>
+      <button class="nav" data-page="history">
+        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.6"/></svg>History</button>
+      <button class="nav" data-page="dictionary">
+        <svg viewBox="0 0 20 20"><path d="M5 3.5h9.5v13H5a1.5 1.5 0 0 1-1.5-1.5V5A1.5 1.5 0 0 1 5 3.5z"/><path d="M3.5 14.5A1.5 1.5 0 0 1 5 13h9.5M7.5 7h4"/></svg>Dictionary</button>
+      <button class="nav" data-page="settings">
+        <svg viewBox="0 0 20 20"><path d="M4 6h7M15 6h1M4 14h1M9 14h7"/><circle cx="13" cy="6" r="2"/><circle cx="7" cy="14" r="2"/></svg>Settings</button>
+      <div class="side-foot">
+        <div class="status" id="status" data-state="idle"><span class="sdot"></span><span id="statusText">Ready</span></div>
+        <div class="ver" id="ver"></div>
+      </div>
+    </nav>
+
+    <main id="main">
+      <!-- HOME -->
+      <section class="page" id="page-home">
+        <div class="setup card" id="setup" hidden>
+          <h2>Connect OpenRouter</h2>
+          <p class="muted">JVoice sends your recordings to ElevenLabs Scribe through OpenRouter, and uses an OpenRouter model to clean up the text. Paste a key to start.</p>
+          <form class="row" id="setupForm">
+            <input type="password" id="setupKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false" aria-label="OpenRouter API key">
+            <button class="btn primary" type="submit" id="setupSave">Save key</button>
+          </form>
+          <div class="form-msg" id="setupMsg" role="alert"></div>
+          <button class="link" data-href="https://openrouter.ai/settings/keys" type="button">Get a key at openrouter.ai</button>
+        </div>
+
+        <div class="hero">
+          <div class="hero-keys" id="heroKeys"></div>
+          <h1 id="heroTitle">Hold the keys and talk</h1>
+          <p class="muted" id="heroSub">Let go and the text is typed wherever your cursor is.</p>
+        </div>
+
+        <div class="try card">
+          <div class="try-head">
+            <label for="tryBox">Try it here</label>
+            <button class="btn ghost sm" id="tryClear" type="button">Clear</button>
+          </div>
+          <textarea id="tryBox" rows="4" placeholder="Click here, then use your shortcut and say something."></textarea>
+        </div>
+
+        <dl class="stats" id="stats">
+          <div><dt>Words today</dt><dd id="stToday">0</dd></div>
+          <div><dt>Words total</dt><dd id="stWords">0</dd></div>
+          <div><dt>Speaking speed</dt><dd id="stWpm">0 wpm</dd></div>
+          <div><dt>Spent</dt><dd id="stCost">$0.00</dd></div>
+        </dl>
+
+        <div class="section-head">
+          <h3>Recent</h3>
+          <button class="link" data-goto="history" type="button">See all</button>
+        </div>
+        <ul class="hist" id="recent"></ul>
+      </section>
+
+      <!-- HISTORY -->
+      <section class="page" id="page-history" hidden>
+        <header class="page-head">
+          <h1>History</h1>
+          <div class="row">
+            <input type="search" id="histSearch" placeholder="Search" aria-label="Search history">
+            <button class="btn ghost danger-text" id="histClear" type="button">Clear all</button>
+          </div>
+        </header>
+        <ul class="hist" id="histList"></ul>
+      </section>
+
+      <!-- DICTIONARY -->
+      <section class="page" id="page-dictionary" hidden>
+        <header class="page-head">
+          <div>
+            <h1>Dictionary</h1>
+            <p class="muted">Names and words JVoice should always spell your way. Add what the speech engine writes instead, and it gets replaced.</p>
+          </div>
+        </header>
+        <form class="dict-form card" id="dictForm">
+          <label class="field"><span>Word or phrase</span><input id="dictTerm" placeholder="JVoice" autocomplete="off" required></label>
+          <label class="field"><span>Heard as <em>(optional, separate with commas)</em></span><input id="dictHeard" placeholder="jay voice, j voice" autocomplete="off"></label>
+          <button class="btn primary" type="submit" id="dictSubmit">Add</button>
+        </form>
+        <div class="form-msg" id="dictMsg" role="alert"></div>
+        <ul class="dict" id="dictList"></ul>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="page" id="page-settings" hidden>
+        <header class="page-head"><h1>Settings</h1></header>
+
+        <section class="group" aria-labelledby="g-key">
+          <h2 id="g-key">OpenRouter key</h2>
+          <div class="card">
+            <div id="keyView" class="setting">
+              <div class="setting-text"><b id="keyMasked"></b><span class="muted" id="keyInfo"></span></div>
+              <div class="row">
+                <button class="btn" id="keyChange" type="button">Replace</button>
+                <button class="btn ghost danger-text" id="keyRemove" type="button">Remove</button>
+              </div>
+            </div>
+            <form id="keyForm" class="setting stack" hidden>
+              <div class="row grow">
+                <input type="password" id="keyInput" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false" aria-label="OpenRouter API key">
+                <button class="btn primary" type="submit" id="keySave">Save key</button>
+                <button class="btn ghost" type="button" id="keyCancel">Cancel</button>
+              </div>
+              <div class="form-msg" id="keyMsg" role="alert"></div>
+              <button class="link" data-href="https://openrouter.ai/settings/keys" type="button">Get a key at openrouter.ai</button>
+            </form>
+          </div>
+          <p class="hint">The key is encrypted with your Windows account and stays on this computer.</p>
+        </section>
+
+        <section class="group" aria-labelledby="g-hotkey">
+          <h2 id="g-hotkey">Shortcut</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>Dictation shortcut</b><span class="muted" id="hkHelp">Press Esc while recording to cancel.</span></div>
+              <div class="row">
+                <span class="keys" id="hkKeys"></span>
+                <button class="btn" id="hkChange" type="button">Change</button>
+              </div>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>How it works</b></div>
+              <div class="seg" role="radiogroup" aria-label="Shortcut mode">
+                <button role="radio" data-mode="hold" type="button">Hold to talk</button>
+                <button role="radio" data-mode="toggle" type="button">Press to start and stop</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="g-mic">
+          <h2 id="g-mic">Microphone</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>Input device</b><span class="muted" id="micHelp"></span></div>
+              <select id="micSelect" aria-label="Microphone"></select>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Test</b><span class="muted">Speak and watch the meter.</span></div>
+              <div class="row">
+                <div class="meter" aria-hidden="true"><span id="micMeter"></span></div>
+                <button class="btn" id="micTest" type="button">Start test</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="g-stt">
+          <h2 id="g-stt">Speech to text</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>Model</b><span class="muted">Runs through OpenRouter.</span></div>
+              <select id="sttModel" aria-label="Speech model">
+                <option value="elevenlabs/scribe-v2">ElevenLabs Scribe v2</option>
+                <option value="elevenlabs/scribe-v2-medical">ElevenLabs Scribe v2 Medical</option>
+              </select>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Language</b><span class="muted">Auto detect works for most people.</span></div>
+              <select id="language" aria-label="Language"></select>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="g-ai">
+          <h2 id="g-ai">AI cleanup</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>Improve text with AI</b><span class="muted">Off pastes exactly what the speech engine heard.</span></div>
+              <label class="switch"><input type="checkbox" id="aiEnabled"><span></span><b class="sr">Improve text with AI</b></label>
+            </div>
+            <div class="ai-body" id="aiBody">
+              <div class="styles" role="radiogroup" aria-label="Cleanup style">
+                <button class="style" role="radio" data-style="clean" type="button">
+                  <b>Light cleanup</b><span>Keeps your words. Removes um and uh, fixes punctuation, applies "no wait" corrections.</span>
+                </button>
+                <button class="style" role="radio" data-style="intent" type="button">
+                  <b>Show my intent</b><span>Rewrites rambling into short, clear text that says what you meant.</span>
+                </button>
+                <button class="style" role="radio" data-style="custom" type="button">
+                  <b>Custom</b><span>Your own instructions, like "write as a formal email".</span>
+                </button>
+              </div>
+              <label class="field" id="customWrap">
+                <span id="customLabel">Extra instructions <em>(optional)</em></span>
+                <textarea id="aiCustom" rows="3" placeholder="Use British spelling. Never use exclamation marks."></textarea>
+              </label>
+              <div class="setting flush">
+                <div class="setting-text"><b>Model</b><span class="muted" id="aiPrice"></span></div>
+                <div class="model-pick">
+                  <input id="aiModel" list="aiModels" spellcheck="false" autocomplete="off" aria-label="AI model">
+                  <datalist id="aiModels"></datalist>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="g-out">
+          <h2 id="g-out">Output</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>When text is ready</b></div>
+              <div class="seg" role="radiogroup" aria-label="Output">
+                <button role="radio" data-output="paste" type="button">Type it into the active app</button>
+                <button role="radio" data-output="copy" type="button">Copy only</button>
+              </div>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Keep my clipboard</b><span class="muted">Puts back what you had copied after pasting.</span></div>
+              <label class="switch"><input type="checkbox" id="restoreClipboard"><span></span><b class="sr">Keep my clipboard</b></label>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Sounds</b><span class="muted">A short tone when recording starts and stops.</span></div>
+              <label class="switch"><input type="checkbox" id="sounds"><span></span><b class="sr">Sounds</b></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="g-gen">
+          <h2 id="g-gen">General</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>Start with Windows</b><span class="muted" id="loginHelp">Runs in the tray, ready for your shortcut.</span></div>
+              <label class="switch"><input type="checkbox" id="launchAtLogin"><span></span><b class="sr">Start with Windows</b></label>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Save history</b><span class="muted">Stored on this computer only.</span></div>
+              <label class="switch"><input type="checkbox" id="keepHistory"><span></span><b class="sr">Save history</b></label>
+            </div>
+            <div class="setting">
+              <div class="setting-text"><b>Longest recording</b></div>
+              <select id="maxRecord" aria-label="Longest recording">
+                <option value="60">1 minute</option>
+                <option value="180">3 minutes</option>
+                <option value="300">5 minutes</option>
+                <option value="600">10 minutes</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="hkDialog" aria-labelledby="hkDialogTitle">
+    <h2 id="hkDialogTitle">Press your new shortcut</h2>
+    <p class="muted">Hold the keys together, then let go. Two keys work best, for example Ctrl + Win or Ctrl + Shift + Space.</p>
+    <div class="keys big" id="hkCapture"><span class="placeholder">Waiting for keys</span></div>
+    <div class="form-msg" id="hkMsg" role="alert"></div>
+    <div class="row end">
+      <button class="btn ghost" id="hkCancel" type="button">Cancel</button>
+      <button class="btn primary" id="hkSave" type="button" disabled>Use this shortcut</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+    <h2 id="confirmTitle"></h2>
+    <p class="muted" id="confirmText"></p>
+    <div class="row end">
+      <button class="btn ghost" id="confirmNo" type="button">Cancel</button>
+      <button class="btn danger" id="confirmYes" type="button"></button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

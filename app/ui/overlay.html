@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self'; media-src 'self' blob: mediastream:">
+  <title>JVoice overlay</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <div class="pill" id="pill" data-state="hidden" role="status" aria-live="polite">
+    <span class="lead" aria-hidden="true">
+      <span class="dot"></span>
+      <svg class="spin" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" /></svg>
+      <svg class="ok" viewBox="0 0 20 20"><path d="M5 10.5l3.2 3.2L15 7" /></svg>
+      <svg class="bad" viewBox="0 0 20 20"><path d="M10 5.5v5.5M10 14.2v.3" /></svg>
+    </span>
+    <span class="wave" id="wave" aria-hidden="true"></span>
+    <span class="text">
+      <span class="label" id="label"></span>
+      <span class="sub" id="sub"></span>
+    </span>
+    <span class="time" id="time"></span>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>

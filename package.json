@@ -1,0 +1,48 @@
+{
+  "name": "jvoice",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "author": "Josephivgi",
+  "description": "JVoice: hold a shortcut, talk, and get clean text typed into any app. Speech to text with ElevenLabs Scribe and optional AI cleanup, all through your OpenRouter key.",
+  "main": "app/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "test": "node --test test/*.test.cjs",
+    "icon": "node scripts/make-icon.cjs",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  },
+  "devDependencies": {
+    "electron": "^44.9.3",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.josephivgi.jvoice",
+    "productName": "JVoice",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "app/**",
+      "assets/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
