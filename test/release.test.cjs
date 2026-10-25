@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
-const { sanitizeOutput, isTerminal, oneLine, improveTimeout } = require('../app/openrouter.cjs');
+const { sanitizeOutput, forTerminal, isTerminal, oneLine, improveTimeout } = require('../app/openrouter.cjs');
 const { verifySignature, signedMessage, sha512File } = require('../app/updater.cjs');
 const { Store } = require('../app/db.cjs');
 
@@ -52,6 +52,12 @@ test('settings cache is cleared on write and callers cannot change it', () => {
   assert.equal(s.updateHistory(row.id, { style: 'raw' }).style, 'raw');
   assert.equal(s.listHistory({ limit: 1 }).length, 1);
   s.close();
+});
+
+test('joiners and direction marks survive, and terminals lose direction marks', () => {
+  const persian = 'm\u200Cx \uD83D\uDC68\u200D\uD83D\uDC69 a\u200Fb';
+  assert.equal(sanitizeOutput(persian), persian);
+  assert.equal(forTerminal('a\u200Eb\u200Fc'), 'abc');
 });
 
 test('line separators become new lines, invisible marks go, and console windows count as terminals', () => {

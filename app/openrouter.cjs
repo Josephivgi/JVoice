@@ -112,20 +112,25 @@ async function improve({ key, model, text, style, customPrompt = '', terms = [],
     ],
   };
   // UTF-8 bytes, not characters: Chinese or Japanese text is about one token per character.
-  const maxTokens = Buffer.byteLength(String(text), 'utf8');
+  // Capped near 16k tokens, which fast models can produce; a provider that still rejects it gets no cap.
+  const maxTokens = Math.min(Buffer.byteLength(String(text), 'utf8'), 12000);
+  let capTokens = true;
   const send = (reasonOff) => request('/chat/completions', {
     key, method: 'POST', timeoutMs: improveTimeout(text), signal,
     // Cleanup needs no thinking, and reasoning only adds seconds before the paste. The token cap
     // leaves room for reasoning on models that insist on it.
     body: reasonOff
-      ? { ...body, reasoning: { effort: 'none' }, max_tokens: maxTokens + 512 }
-      : { ...body, reasoning: { effort: 'low' }, max_tokens: maxTokens + 4096 },
+      ? { ...body, reasoning: { effort: 'none' }, ...(capTokens && { max_tokens: maxTokens + 512 }) }
+      : { ...body, reasoning: { effort: 'low' }, ...(capTokens && { max_tokens: maxTokens + 4096 }) },
   });
   let json;
-  try { json = await send(!mustReason.has(model)); } catch (err) {
-    if (err.status !== 400 || !/reason/i.test(err.message) || mustReason.has(model)) throw err;
-    mustReason.add(model);
-    json = await send(false);
+  for (let attempt = 0; ; attempt++) {
+    try { json = await send(!mustReason.has(model)); break; } catch (err) {
+      if (err.status !== 400 || attempt >= 2) throw err;
+      if (/max_tokens|maximum|too large/i.test(err.message) && capTokens) capTokens = false;
+      else if (/reason/i.test(err.message) && !mustReason.has(model)) mustReason.add(model);
+      else throw err;
+    }
   }
   // A reply cut off at the token cap would drop the end of what the user said; use the raw text instead.
   if (json?.choices?.[0]?.finish_reason === 'length') throw new ApiError('The AI reply was cut off.', 0);
@@ -196,7 +201,14 @@ function sanitizeOutput(text) {
   return String(text)
     .replace(/\r\n?/g, '\n')
     .replace(/[\u2028\u2029]/g, '\n')
-    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '');
+    // Joiners and direction marks (200C-200F) stay: Persian, Hindi, emoji sequences and mixed
+    // Hebrew/English text need them.
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200B\u202A-\u202E\u2066-\u2069]/g, '');
+}
+
+// In a terminal, direction marks could hide what a command really does, so they go too.
+function forTerminal(text) {
+  return String(text).replace(/[\u200E\u200F]/g, '');
 }
 
 // Consoles run each pasted line as a command, so text for a terminal goes in as one line.
@@ -211,4 +223,4 @@ function countWords(text) {
   return m ? m.length : 0;
 }
 
-module.exports = { setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };
+module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

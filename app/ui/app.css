@@ -111,7 +111,7 @@ input[type="search"] { width: 220px; }
 .item-meta .tag.failed { color: var(--danger); font-weight: 600; }
 .item-actions { margin-left: auto; display: flex; gap: 2px; }
 .item-actions .btn.icon { opacity: .6; transition: opacity .12s; }
-@media (hover: none) { .item-actions { opacity: 1; } }
+@media (hover: none) { .item-actions .btn.icon { opacity: 1; } }
 .item:hover .item-actions .btn.icon, .item:focus-within .item-actions .btn.icon, .item-actions .btn.icon:focus-visible { opacity: 1; }
 .item-text { white-space: pre-wrap; word-break: break-word; }
 /* Show changes: added words underlined in the accent, removed words struck through and dimmed. */

@@ -68,13 +68,15 @@ const shortModel = (id) => String(id || '').split('/').pop();
 function wordDiff(a, b) {
   const A = a.match(/\S+\s*/g) || [], B = b.match(/\S+\s*/g) || [];
   if (A.length * B.length > 4e5) return [b];
-  const t = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, ''); // "to," and "To" count as the same word
+  // "to," and "To" count as the same word, and so do don't and don\u2019t.
+  const t = (w) => w.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']/gu, '');
+  const ta = A.map(t), tb = B.map(t); // normalized once; the table below compares every pair
   const L = Array.from({ length: A.length + 1 }, () => new Uint16Array(B.length + 1));
-  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = t(A[i]) && t(A[i]) === t(B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = ta[i] && ta[i] === tb[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   const out = [];
   let i = 0, j = 0;
   while (i < A.length || j < B.length) {
-    if (i < A.length && j < B.length && t(A[i]) && t(A[i]) === t(B[j])) {
+    if (i < A.length && j < B.length && ta[i] && ta[i] === tb[j]) {
       // Same word, but punctuation or capitals may differ: that is a fix too.
       out.push(A[i].trim() === B[j].trim() ? B[j] : el('ins', { class: 'fix', title: `was "${A[i].trim()}"` }, B[j]));
       i++; j++;
@@ -84,7 +86,7 @@ function wordDiff(a, b) {
   }
   return out;
 }
-const changedWords = (a, b) => wordDiff(a, b).filter((n) => typeof n !== 'string').length;
+const countChanges = (nodes) => nodes.filter((n) => typeof n !== 'string').length;
 
 function confirmBox(title, text, yes) {
   return new Promise((resolve) => {
@@ -189,8 +191,9 @@ function renderTryResult(r) {
   if (r.style === 'raw') box.replaceChildren((r.aiError ? 'AI cleanup failed, so you got the text as heard.' : 'AI cleanup is off, so you got the text as heard.') + cut);
   else if (r.raw === r.final) box.replaceChildren(`${name} found nothing to fix.${cut}`);
   else {
-    const n = changedWords(r.raw, r.final);
-    const diff = el('p', { class: 'diff', hidden: true }, wordDiff(r.raw, r.final));
+    const nodes = wordDiff(r.raw, r.final);
+    const n = countChanges(nodes);
+    const diff = el('p', { class: 'diff', hidden: true }, nodes);
     const btn = el('button', { class: 'link', type: 'button', 'aria-expanded': 'false', onclick: () => {
       diff.hidden = !diff.hidden; btn.setAttribute('aria-expanded', String(!diff.hidden)); btn.textContent = diff.hidden ? 'Show changes' : 'Hide changes';
     } }, 'Show changes');

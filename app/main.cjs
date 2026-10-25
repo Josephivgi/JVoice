@@ -26,6 +26,7 @@ const IMPORT_KEY = devArg('--import-key') > 0;
 const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || IMPORT_KEY;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
+const ASSETS = path.join(__dirname, '..', 'assets');
 // Pages are served from app://jvoice/ (not file://), so file:// can stay locked down by the fuses.
 const UI_URL = 'app://jvoice/';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
@@ -33,8 +34,11 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 function serveUi() {
   protocol.handle('app', async (req) => {
     const u = new URL(req.url);
-    const file = path.normalize(path.join(UI, decodeURIComponent(u.pathname)));
-    if (u.host !== 'jvoice' || !file.startsWith(UI + path.sep)) return new Response('Not found', { status: 404 });
+    // /assets/ is the app icon folder; everything else is a page file. Paths must stay inside their folder.
+    const assets = u.pathname.startsWith('/assets/');
+    const base = assets ? ASSETS : UI;
+    const file = path.normalize(path.join(base, decodeURIComponent(assets ? u.pathname.slice('/assets'.length) : u.pathname)));
+    if (u.host !== 'jvoice' || !file.startsWith(base + path.sep)) return new Response('Not found', { status: 404 });
     try {
       return new Response(await fs.promises.readFile(file), { headers: { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' } });
     } catch { return new Response('Not found', { status: 404 }); }
@@ -441,9 +445,10 @@ async function output(text, { signal, target, clip } = {}) {
   const s = store.getSettings();
   if (s.outputMode !== 'paste') { clipboard.writeText(text); return { pasted: false }; }
   let note = '';
-  if (target && api.isTerminal(target.exe, target.cls) && /[\n\u2028\u2029]/.test(text)) {
+  if (target && api.isTerminal(target.exe, target.cls)) {
+    text = api.forTerminal(text);
+    if (/[\n\u2028\u2029]/.test(text)) note = 'Pasted as one line, since this is a terminal.';
     text = api.oneLine(text);
-    note = 'Pasted as one line, since this is a terminal.';
   }
   const released = await hotkey.waitForModifiersReleased(1500, signal);
   if (signal?.aborted) return { pasted: false };
@@ -465,7 +470,7 @@ async function output(text, { signal, target, clip } = {}) {
   if (signal?.aborted) return { pasted: false };
   // Text that is only on the clipboard for the paste stays out of Windows clipboard history.
   let written = false;
-  if (win32) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
+  if (win32 && s.restoreClipboard) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
   if (!written) clipboard.writeText(text);
   if (!sameWindow()) { if (written) clipboard.writeText(text); return switched; }
   if (hotkey.modifiersDown()) { if (written) clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
