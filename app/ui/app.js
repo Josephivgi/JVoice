@@ -166,6 +166,7 @@ async function saveKey(input, msg, btn) {
     input.value = '';
     toast('Key saved');
     keyEditing = false;
+    keyInfoGen++;
     renderHero(); renderStatus(); renderIssue(); renderKey(r.info);
     if (!$('page-home').hidden) { loadHome(); $('tryBox').focus(); }
     return true;
@@ -297,10 +298,15 @@ function renderKey(info) {
   parts.push(info.limit != null ? `$${info.usage.toFixed(2)} of $${info.limit.toFixed(2)} used` : `$${info.usage.toFixed(2)} used`);
   $('keyInfo').textContent = parts.join(' · ');
 }
+let keyInfoGen = 0;
 async function loadKeyInfo() {
+  const gen = ++keyInfoGen;
   if (!settings?.hasKey) return renderKey(null);
   $('keyInfo').textContent = 'Checking key…';
-  try { renderKey(await api.invoke('key:info')); } catch (err) { $('keyInfo').textContent = err.message; }
+  try {
+    const info = await api.invoke('key:info');
+    if (gen === keyInfoGen) renderKey(info);
+  } catch (err) { if (gen === keyInfoGen) $('keyInfo').textContent = err.message; }
 }
 $('keyChange').addEventListener('click', () => { keyEditing = true; renderKey(); $('keyInput').focus(); });
 $('keyCancel').addEventListener('click', () => { keyEditing = false; $('keyMsg').textContent = ''; $('keyInput').value = ''; renderKey(); });
@@ -309,6 +315,7 @@ $('keyRemove').addEventListener('click', async () => {
   if (!await confirmBox('Remove your key?', 'JVoice cannot transcribe until you add a key again.', 'Remove key')) return;
   settings = await api.invoke('key:clear');
   keyEditing = false;
+  keyInfoGen++;
   renderKey(null); renderHero(); renderStatus(); renderIssue();
 });
 
@@ -428,6 +435,8 @@ api.on('hotkey:capture', (c) => {
 let hkListening = false;
 $('hkDialog').addEventListener('keydown', (e) => {
   if (!hkListening || e.key === 'Escape' || e.key === 'Tab') return;
+  const plain = !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
+  if (plain && (e.key === 'Enter' || e.key === ' ') && e.target.closest('button')) return;
   e.preventDefault();
 });
 $('hkCancel').addEventListener('click', () => $('hkDialog').close());
@@ -456,13 +465,20 @@ async function loadMics() {
   }
 }
 navigator.mediaDevices.addEventListener('devicechange', () => { if (!$('page-settings').hidden) loadMics(); });
-$('micSelect').addEventListener('change', (e) => { save({ micDeviceId: e.target.value }); if (micTest) { stopMicTest(); startMicTest(); } });
+$('micSelect').addEventListener('change', (e) => {
+  save({ micDeviceId: e.target.value });
+  const wasTesting = !!micTest || micStarting;
+  stopMicTest();
+  if (wasTesting) startMicTest();
+});
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopMicTest(); });
 
 let micGen = 0;
+let micStarting = false;
 async function startMicTest() {
   if (micTest) return;
   const gen = ++micGen;
+  micStarting = true;
   $('micTest').disabled = true;
   try {
     const id = $('micSelect').value;
@@ -484,10 +500,11 @@ async function startMicTest() {
     $('micTest').textContent = 'Stop test';
   } catch (err) {
     if (gen === micGen) toast(err.name === 'NotAllowedError' ? 'Microphone access is blocked.' : `Could not open the microphone: ${err.message}`, true);
-  } finally { if (gen === micGen) $('micTest').disabled = false; }
+  } finally { if (gen === micGen) { micStarting = false; $('micTest').disabled = false; } }
 }
 function stopMicTest() {
   micGen++;
+  micStarting = false;
   $('micTest').disabled = false;
   if (!micTest) return;
   cancelAnimationFrame(micTest.raf);

@@ -7,6 +7,11 @@ body { display: flex; align-items: center; justify-content: center; }
   --pill-bg: oklch(0.17 0.008 260 / 0.94);
   --pill-text: oklch(0.96 0.004 260);
   --pill-sub: oklch(0.75 0.01 260);
+  /* Status colors fixed for the dark pill, whatever the app theme is. */
+  --pill-rec: oklch(0.70 0.17 25);
+  --pill-busy: oklch(0.74 0.14 258);
+  --pill-ok: oklch(0.78 0.14 155);
+  --pill-warn: oklch(0.82 0.13 80);
   display: flex; align-items: center; gap: 10px;
   height: 44px; padding: 0 16px 0 12px; box-sizing: border-box;
   min-width: 148px; max-width: 284px;
@@ -19,11 +24,11 @@ body { display: flex; align-items: center; justify-content: center; }
 
 .lead { width: 20px; height: 20px; display: grid; place-items: center; flex: none; }
 .lead > * { grid-area: 1 / 1; display: none; }
-.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
-.spin { width: 18px; height: 18px; fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 30 18; animation: rot .9s linear infinite; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pill-rec); animation: pulse 1.4s ease-in-out infinite; }
+.spin { width: 18px; height: 18px; fill: none; stroke: var(--pill-busy); stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 30 18; animation: rot .9s linear infinite; }
 .ok, .bad { width: 20px; height: 20px; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.ok { stroke: var(--success); }
-.bad { stroke: var(--warn); }
+.ok { stroke: var(--pill-ok); }
+.bad { stroke: var(--pill-warn); }
 
 [data-state="recording"] .dot,
 [data-state="starting"] .dot { display: block; }

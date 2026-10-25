@@ -60,7 +60,7 @@ class Hotkey extends EventEmitter {
 
   start() {
     if (this.started) return;
-    uIOhook.on('keydown', (e) => this.onDown(e.keycode));
+    uIOhook.on('keydown', (e) => this.onDown(e.keycode, e));
     uIOhook.on('keyup', (e) => this.onUp(e.keycode));
     uIOhook.start();
     this.started = true;
@@ -89,20 +89,27 @@ class Hotkey extends EventEmitter {
   }
 
   // Forget keys whose key-up we never saw (lock screen, UAC prompt, focus change to an elevated app).
-  // Only keys older than a second are checked against the live key state: a fresh entry may belong to
-  // events still queued behind this one, and the live state would already show them released.
-  reconcile(now, except) {
+  // ev is the hook event; its modifier flags are the state when this key was pressed, so queued events
+  // are judged by their own moment, not by the live keyboard. Flags only ever remove entries, so a stale
+  // flag after the lock screen does no harm (the lock-screen handler also resets everything). Without
+  // flags, old modifier entries are checked against the live key state.
+  reconcile(now, except, ev) {
+    const flag = { [K.Ctrl]: 'ctrlKey', [K.Shift]: 'shiftKey', [K.Alt]: 'altKey', [K.Meta]: 'metaKey' };
     for (const [c, t] of this.raw) {
-      if (c === except || now - t < 1000) continue;
-      if (VK[c] && this.isKeyDown) { if (!this.isKeyDown(VK[c])) this.raw.delete(c); }
-      else if (now - t > 8000) this.raw.delete(c); // non-modifier keys auto-repeat while held
+      if (c === except) continue;
+      const f = flag[norm(c)];
+      if (f && ev && typeof ev[f] === 'boolean') {
+        if (!ev[f]) this.raw.delete(c); // the event says it was up: our key-down entry is stale
+      } else if (VK[c] && this.isKeyDown) {
+        if (now - t > 1000 && !this.isKeyDown(VK[c])) this.raw.delete(c);
+      } else if (now - t > 8000) this.raw.delete(c); // non-modifier keys auto-repeat while held
     }
   }
 
-  onDown(code) {
+  onDown(code, ev) {
     if (this.consumeInjected('down', code)) return;
     const now = Date.now();
-    this.reconcile(now, code);
+    this.reconcile(now, code, ev);
     const repeat = this.raw.has(code);
     this.raw.set(code, now);
     const n = norm(code);

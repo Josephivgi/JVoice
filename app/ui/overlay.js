@@ -11,11 +11,15 @@ const WORKLET = `
 class Tap extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buf = new Float32Array(1024); this.n = 0;
-    // A flush request sends the partial buffer so the last words are not cut off.
-    this.port.onmessage = () => { this.port.postMessage({ flushed: this.buf.slice(0, this.n) }); this.n = 0; };
+    this.buf = new Float32Array(1024); this.n = 0; this.alive = true;
+    this.port.onmessage = (e) => {
+      // flush: send the partial buffer so the last words are not cut off. dispose: stop for good.
+      if (e.data === 'flush') { this.port.postMessage({ flushed: this.buf.slice(0, this.n) }); this.n = 0; }
+      else if (e.data === 'dispose') { this.alive = false; this.port.close(); }
+    };
   }
   process(inputs) {
+    if (!this.alive) return false;
     const ch = inputs[0] && inputs[0][0];
     if (ch) for (let i = 0; i < ch.length; i++) {
       this.buf[this.n++] = ch[i];
@@ -108,7 +112,7 @@ async function start({ id, deviceId, sounds, maxSeconds }) {
       navigator.mediaDevices.getUserMedia({
         audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       }).then((st) => { if (rec !== me) st.getTracks().forEach((t) => t.stop()); else me.stream = st; return st; }),
-      ensureEngine().then(async (c) => { await c.resume(); return c; }),
+      ensureEngine().then(async (c) => { if (rec === me) await c.resume(); idleEngine(); return c; }),
     ]);
     if (rec !== me) return;
     me.ctx = ctx;
@@ -149,14 +153,20 @@ async function start({ id, deviceId, sounds, maxSeconds }) {
   }
 }
 
+// Suspends the shared engine whenever no recording is using it.
+function idleEngine() {
+  if (engine) engine.then((c) => { if (!rec) c.suspend().catch(() => {}); }).catch(() => {});
+}
+
 function teardown() {
-  if (!rec) return;
+  if (!rec) { idleEngine(); return; }
   const r = rec; rec = null;
   cancelAnimationFrame(r.raf);
   clearTimeout(r.limitTimer);
   try { r.src && r.src.disconnect(); r.node && r.node.disconnect(); } catch { /* already gone */ }
+  if (r.node) { r.node.port.postMessage('dispose'); r.node.port.onmessage = null; }
   if (r.stream) r.stream.getTracks().forEach((t) => t.stop());
-  if (r.ctx) r.ctx.suspend().catch(() => {});
+  idleEngine();
   return r;
 }
 
@@ -189,7 +199,6 @@ async function stop({ id }) {
   const r = rec;
   if (!r || r.id !== id) { window.jvoice.send('rec:done', { id, error: 'The microphone never started.' }); return; }
   if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
-  const ms = Date.now() - (r.firstAt || r.startedAt);
   const rate = r.ctx.sampleRate;
   // Ask the worklet for its partial buffer and wait for it (or give up after 300 ms).
   await new Promise((res) => { r.flushed = res; r.node.port.postMessage('flush'); setTimeout(res, 300); });
@@ -200,6 +209,7 @@ async function stop({ id }) {
   const all = new Float32Array(total);
   let o = 0; for (const c of r.chunks) { all.set(c, o); o += c.length; }
   const pcm = resample(all, rate, TARGET_RATE);
+  const ms = Math.round((pcm.length / TARGET_RATE) * 1000);
   window.jvoice.send('rec:done', { id, wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak, lagMs: r.firstAt ? r.firstAt - r.startedAt : -1, ctxState: r.ctx.state, rate: r.ctx.sampleRate, requestedAt: r.requestedAt });
 }
 

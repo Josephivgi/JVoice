@@ -147,3 +147,21 @@ test('a just-pressed modifier is trusted even if Windows already reports it rele
   h.onDown(K.Ctrl); h.onDown(K.Meta); // both handled late, after the user already let go
   assert.equal(started, 1);
 });
+
+test('hook event modifier flags decide for queued events; stale entries still get dropped', () => {
+  // Ctrl held long, Win pressed: the event says Ctrl is down, so the live state (already up) is not consulted.
+  const h = new Hotkey({ isKeyDown: () => false }); h.tap = () => {};
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'toggle' });
+  let started = 0; h.on('start', () => started++);
+  h.raw.set(K.Ctrl, Date.now() - 3000);
+  h.onDown(K.Meta, { ctrlKey: true, metaKey: true, shiftKey: false, altKey: false });
+  assert.equal(started, 1);
+  // A Shift whose key-up was missed: the event says Shift is up, so it is dropped and the combo matches.
+  const g = new Hotkey({ isKeyDown: () => true }); g.tap = () => {};
+  g.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
+  let s2 = 0; g.on('start', () => s2++);
+  g.raw.set(K.Shift, Date.now());
+  g.onDown(K.Ctrl, { ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
+  g.onDown(K.Meta, { ctrlKey: true, metaKey: true, shiftKey: false, altKey: false });
+  assert.equal(s2, 1);
+});

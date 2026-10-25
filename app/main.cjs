@@ -246,7 +246,14 @@ const dictation = {
     this.watchdog = { id, timer: setTimeout(() => {
       this.watchdog = null;
       if (this.pendingStop?.id === id) this.pendingStop.resolve({ id, error: 'The recorder stopped responding, so JVoice restarted it. Try again.' });
+      const orphan = this.state === 'recording' && this.session !== id;
       recreateOverlay();
+      if (orphan) {
+        if (this.pendingStop) { this.pendingStop.resolve(null); this.pendingStop = null; }
+        this.session++;
+        this.setState('idle');
+        overlayState('error', { message: 'The recorder stopped responding, so JVoice restarted it. Try again.' }, 3600);
+      }
     }, 5000) };
     p.then((rec) => {
       if (this.pendingStop?.id === id) this.pendingStop = null;
@@ -291,7 +298,7 @@ const dictation = {
     } catch (err) {
       if (ac.signal.aborted || !current()) return;
       fail(err.message, 3600);
-      reportIssue(err.message, issueAction(err) || 'history');
+      reportIssue(err.saved ? `${err.message} The recording is saved in History.` : err.message, issueAction(err) || (err.saved ? 'history' : ''));
     } finally {
       if (this.abort === ac) this.abort = null;
       if (current() && this.state === 'processing') this.setState('idle');
@@ -323,6 +330,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
         store.updateHistory(row.id, { audio_path: file });
       } else store.updateHistory(row.id, { error: err.message });
       toMain('history:changed');
+      err.saved = true; // the recording is in History with Retry
     }
     throw err;
   }
@@ -362,9 +370,9 @@ async function output(text, { signal, target } = {}) {
   if (signal?.aborted) return { pasted: false };
   if (!released) { clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
   const sameWindow = () => {
-    if (!target || !win32) return true;
+    if (!win32) return true; // helper failed to load (smoke test reports this); paste without the check
     const now = win32.foregroundWindow();
-    return !!now && now.id === target.id && now.pid === target.pid;
+    return !!target && !!now && now.id === target.id && now.pid === target.pid;
   };
   const switched = { pasted: false, note: 'You switched windows, so the text was copied instead.' };
   if (!sameWindow()) { clipboard.writeText(text); return switched; }

@@ -127,7 +127,8 @@ input[type="search"] { width: 220px; }
 .dict-editing { grid-column: 1 / -1; font-size: var(--fs-sm); color: var(--text-2); margin: -4px 0 0; }
 .dict li { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); }
 .dict li + li { border-top: 1px solid var(--border); }
-.dict .term { font-weight: 600; }
+.dict .term { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.dict li > .btn { flex: none; }
 .dict .heard { color: var(--text-3); font-size: var(--fs-sm); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Settings */
@@ -148,7 +149,7 @@ input[type="search"] { width: 220px; }
 .switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
 .switch span { width: 36px; height: 20px; border-radius: 10px; background: var(--surface-3); border: 1px solid var(--border-strong); transition: background .15s; position: relative; }
 .switch span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-2); transition: transform .15s var(--ease), background .15s; }
-.switch input:checked + span { background: var(--accent); border-color: transparent; }
+.switch input:checked + span { background: var(--accent-fill); border-color: transparent; }
 .switch input:checked + span::after { transform: translateX(16px); background: #fff; }
 .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 2px; }
 .switch:has(input:disabled) { cursor: not-allowed; }
@@ -185,6 +186,7 @@ dialog::backdrop { background: oklch(0 0 0 / .5); }
   .stats > div:nth-child(n+3) { border-top: 1px solid var(--border); }
   .dict-form { grid-template-columns: 1fr; }
   .setting { flex-wrap: wrap; }
+  .setting:has(> .switch) { flex-wrap: nowrap; }
   .model-pick input { width: 100%; }
 }
 @media (max-width: 720px) {
