@@ -134,7 +134,7 @@ function applyDictionary(text, entries) {
   for (const e of entries) {
     for (const alias of String(e.heard_as || '').split(',').map((s) => s.trim()).filter(Boolean)) {
       const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), e.term);
+      out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), () => e.term);
     }
   }
   return out;

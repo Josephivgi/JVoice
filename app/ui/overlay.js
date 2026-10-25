@@ -1,7 +1,7 @@
 'use strict';
 // Floating status pill + microphone recorder. Audio is captured as 16 kHz mono PCM and sent to main as WAV.
 const $ = (id) => document.getElementById(id);
-const pill = $('pill'), label = $('label'), sub = $('sub'), time = $('time'), wave = $('wave');
+const pill = $('pill'), label = $('label'), sub = $('sub'), time = $('time'), wave = $('wave'), live = $('live');
 const BARS = 22;
 for (let i = 0; i < BARS; i++) wave.appendChild(document.createElement('i'));
 const bars = [...wave.children];
@@ -9,7 +9,12 @@ const bars = [...wave.children];
 const TARGET_RATE = 16000;
 const WORKLET = `
 class Tap extends AudioWorkletProcessor {
-  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  constructor() {
+    super();
+    this.buf = new Float32Array(1024); this.n = 0;
+    // A flush request sends the partial buffer so the last words are not cut off.
+    this.port.onmessage = () => { this.port.postMessage({ flushed: this.buf.slice(0, this.n) }); this.n = 0; };
+  }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (ch) for (let i = 0; i < ch.length; i++) {
@@ -45,6 +50,7 @@ function beep(kind, on) {
 
 function fmt(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 
+const SPOKEN = { recording: 'Recording', transcribing: 'Transcribing', improving: 'Improving text', cancelled: 'Cancelled' };
 function render(state, data = {}) {
   pill.dataset.state = state;
   sub.textContent = '';
@@ -61,6 +67,10 @@ function render(state, data = {}) {
     case 'cancelled': label.textContent = 'Cancelled'; break;
     default: break;
   }
+  // One short announcement per state change for screen readers; the timer and waveform stay silent.
+  const said = state === 'done' || state === 'error' ? [label.textContent, sub.textContent].filter(Boolean).join('. ') : SPOKEN[state] || '';
+  if (said && live.textContent !== said) live.textContent = said;
+  if (state === 'hidden') live.textContent = '';
 }
 
 function drawLevels() {
@@ -70,9 +80,10 @@ function drawLevels() {
   rec.raf = requestAnimationFrame(drawLevels);
 }
 
-async function start({ deviceId, sounds, maxSeconds }) {
+async function start({ id, deviceId, sounds, maxSeconds }) {
   if (rec) teardown();
-  const me = rec = { chunks: [], peak: 0, startedAt: Date.now(), sounds, cancelled: false };
+  const me = rec = { id, chunks: [], peak: 0, startedAt: Date.now(), sounds };
+  const fail = (message) => window.jvoice.send('rec:error', { id, message });
   levels.fill(0);
   render('starting');
   try {
@@ -91,6 +102,7 @@ async function start({ deviceId, sounds, maxSeconds }) {
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'tap');
     node.port.onmessage = (e) => {
+      if (e.data.flushed) { if (e.data.flushed.length) me.chunks.push(e.data.flushed); me.flushed?.(); return; }
       const buf = e.data;
       me.chunks.push(buf);
       let sum = 0, pk = 0;
@@ -105,9 +117,9 @@ async function start({ deviceId, sounds, maxSeconds }) {
     render('recording');
     beep('start', me.sounds);
     me.raf = requestAnimationFrame(drawLevels);
-    me.limitTimer = setTimeout(() => window.jvoice.send('rec:limit'), (maxSeconds || 600) * 1000);
+    me.limitTimer = setTimeout(() => window.jvoice.send('rec:limit', id), (maxSeconds || 600) * 1000);
     stream.getAudioTracks()[0].addEventListener('ended', () => {
-      if (rec === me) { teardown(); window.jvoice.send('rec:error', 'The microphone was disconnected.'); }
+      if (rec === me) { teardown(); fail('The microphone was disconnected.'); }
     });
   } catch (err) {
     if (rec !== me) return;
@@ -117,7 +129,7 @@ async function start({ deviceId, sounds, maxSeconds }) {
       : name === 'NotFoundError' || name === 'OverconstrainedError' ? 'No microphone found. Pick one in JVoice settings.'
       : name === 'NotReadableError' ? 'The microphone is busy in another app.'
       : `Could not start the microphone: ${err.message || err}`;
-    window.jvoice.send('rec:error', msg);
+    fail(msg);
   }
 }
 
@@ -157,21 +169,22 @@ function encodeWav(samples, rate) {
   return new Uint8Array(buf);
 }
 
-async function stop() {
+async function stop({ id }) {
   const r = rec;
-  if (!r) { window.jvoice.send('rec:done', { error: 'The microphone never started.' }); return; }
-  if (!r.ctx) { teardown(); window.jvoice.send('rec:done', { error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
-  // Let the last worklet buffers arrive before closing.
-  await new Promise((res) => setTimeout(res, 120));
-  const rate = r.ctx.sampleRate;
+  if (!r || r.id !== id) { window.jvoice.send('rec:done', { id, error: 'The microphone never started.' }); return; }
+  if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
   const ms = Date.now() - r.startedAt;
+  const rate = r.ctx.sampleRate;
+  // Ask the worklet for its partial buffer and wait for it (or give up after 300 ms).
+  await new Promise((res) => { r.flushed = res; r.node.port.postMessage('flush'); setTimeout(res, 300); });
+  if (rec !== r) return; // cancelled or replaced while flushing; main ignores this session now
   teardown();
   beep('stop', r.sounds);
   const total = r.chunks.reduce((n, c) => n + c.length, 0);
   const all = new Float32Array(total);
   let o = 0; for (const c of r.chunks) { all.set(c, o); o += c.length; }
   const pcm = resample(all, rate, TARGET_RATE);
-  window.jvoice.send('rec:done', { wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak });
+  window.jvoice.send('rec:done', { id, wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak });
 }
 
 window.jvoice.on('rec:start', start);

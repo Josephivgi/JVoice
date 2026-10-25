@@ -31,9 +31,21 @@
     <main id="main">
       <!-- HOME -->
       <section class="page" id="page-home">
+        <div class="issue" id="issue" role="alert" hidden>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6.5v4.2M10 13.4v.1"/></svg>
+          <p id="issueText"></p>
+          <button class="btn sm" id="issueAction" type="button" hidden></button>
+          <button class="btn ghost icon sm" id="issueDismiss" type="button" aria-label="Dismiss" title="Dismiss">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg></button>
+        </div>
+
         <div class="setup card" id="setup" hidden>
-          <h2>Connect OpenRouter</h2>
-          <p class="muted">JVoice sends your recordings to ElevenLabs Scribe through OpenRouter, and uses an OpenRouter model to clean up the text. Paste a key to start.</p>
+          <h1>Connect OpenRouter</h1>
+          <p class="muted">JVoice turns your voice into text with ElevenLabs Scribe, then an AI model cleans it up. Both run through your OpenRouter account, so you pay OpenRouter for what you use.</p>
+          <ol>
+            <li>Create a key at openrouter.ai and add a few dollars of credit.</li>
+            <li>Paste the key below. It is checked with OpenRouter, then encrypted on this computer.</li>
+          </ol>
           <form class="row" id="setupForm">
             <input type="password" id="setupKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false" aria-label="OpenRouter API key">
             <button class="btn primary" type="submit" id="setupSave">Save key</button>
@@ -42,6 +54,7 @@
           <button class="link" data-href="https://openrouter.ai/settings/keys" type="button">Get a key at openrouter.ai</button>
         </div>
 
+        <div class="home-ready" id="homeReady">
         <div class="hero">
           <div class="hero-keys" id="heroKeys"></div>
           <h1 id="heroTitle">Hold the keys and talk</h1>
@@ -56,7 +69,7 @@
           <textarea id="tryBox" rows="4" placeholder="Click here, then use your shortcut and say something."></textarea>
         </div>
 
-        <dl class="stats" id="stats">
+        <dl class="stats" id="stats" hidden>
           <div><dt>Words today</dt><dd id="stToday">0</dd></div>
           <div><dt>Words total</dt><dd id="stWords">0</dd></div>
           <div><dt>Speaking speed</dt><dd id="stWpm">0 wpm</dd></div>
@@ -68,6 +81,7 @@
           <button class="link" data-goto="history" type="button">See all</button>
         </div>
         <ul class="hist" id="recent"></ul>
+        </div>
       </section>
 
       <!-- HISTORY -->
@@ -93,10 +107,15 @@
         <form class="dict-form card" id="dictForm">
           <label class="field"><span>Word or phrase</span><input id="dictTerm" placeholder="JVoice" autocomplete="off" required></label>
           <label class="field"><span>Heard as <em>(optional, separate with commas)</em></span><input id="dictHeard" placeholder="jay voice, j voice" autocomplete="off"></label>
-          <button class="btn primary" type="submit" id="dictSubmit">Add</button>
+          <div class="row">
+            <button class="btn ghost" type="button" id="dictCancel" hidden>Cancel</button>
+            <button class="btn primary" type="submit" id="dictSubmit">Add</button>
+          </div>
+          <p class="dict-editing" id="dictEditing" hidden></p>
         </form>
         <div class="form-msg" id="dictMsg" role="alert"></div>
         <ul class="dict" id="dictList"></ul>
+        <p class="dict-empty" id="dictEmpty" hidden>No words yet. Add names, product terms or jargon the speech engine gets wrong.</p>
       </section>
 
       <!-- SETTINGS -->
@@ -184,7 +203,7 @@
           <h2 id="g-ai">AI cleanup</h2>
           <div class="card">
             <div class="setting">
-              <div class="setting-text"><b>Improve text with AI</b><span class="muted">Off pastes exactly what the speech engine heard.</span></div>
+              <div class="setting-text"><b>Improve text with AI</b><span class="muted">When off, you get what the speech engine heard, plus your dictionary fixes.</span></div>
               <label class="switch"><input type="checkbox" id="aiEnabled"><span></span><b class="sr">Improve text with AI</b></label>
             </div>
             <div class="ai-body" id="aiBody">
@@ -207,6 +226,7 @@
                 <div class="setting-text"><b>Model</b><span class="muted" id="aiPrice"></span></div>
                 <div class="model-pick">
                   <input id="aiModel" list="aiModels" spellcheck="false" autocomplete="off" aria-label="AI model">
+                  <button class="btn sm" id="aiModelRetry" type="button" hidden>Retry</button>
                   <datalist id="aiModels"></datalist>
                 </div>
               </div>
@@ -225,7 +245,7 @@
               </div>
             </div>
             <div class="setting">
-              <div class="setting-text"><b>Keep my clipboard</b><span class="muted">Puts back what you had copied after pasting.</span></div>
+              <div class="setting-text"><b>Keep my clipboard</b><span class="muted" id="restoreHelp">Puts back what you had copied after pasting.</span></div>
               <label class="switch"><input type="checkbox" id="restoreClipboard"><span></span><b class="sr">Keep my clipboard</b></label>
             </div>
             <div class="setting">

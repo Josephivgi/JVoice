@@ -37,7 +37,7 @@ test('combo validation', () => {
 });
 
 test('hold mode: start on full combo, stop on release, interrupt on extra key', () => {
-  const h = new Hotkey();
+  const h = new Hotkey({ isKeyDown: null });
   h.tap = () => {}; // no real key injection in tests
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   const ev = [];
@@ -51,7 +51,7 @@ test('hold mode: start on full combo, stop on release, interrupt on extra key', 
 });
 
 test('hold mode ignores the combo when other keys are already held', () => {
-  const h = new Hotkey(); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
   h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
   let started = 0; h.on('start', () => started++);
   h.onDown(K.Shift); h.onDown(K.Ctrl); h.onDown(K.Meta);
@@ -59,7 +59,7 @@ test('hold mode ignores the combo when other keys are already held', () => {
 });
 
 test('toggle mode: press to start, press again to stop', () => {
-  const h = new Hotkey(); h.tap = () => {};
+  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
   h.configure({ combo: [K.Ctrl, K.Shift, K.Space], mode: 'toggle' });
   const ev = [];
   h.on('start', () => { ev.push('start'); h.recording = true; });
@@ -88,4 +88,54 @@ test('store: settings, history, stats and dictionary', () => {
   assert.equal(s.getHistoryItem(row.id), null);
   s.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('dictionary terms are inserted literally', () => {
+  assert.equal(applyDictionary('pay j voice', [{ term: 'J$&V', heard_as: 'j voice' }]), 'pay J$&V');
+});
+
+test('our own injected keys are skipped, real keys are not', () => {
+  const h = new Hotkey({ isKeyDown: null });
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
+  const ev = [];
+  h.on('start', () => { ev.push('start'); h.recording = true; });
+  h.on('interrupt', () => ev.push('interrupt'));
+  h.on('cancel', () => ev.push('cancel'));
+  h.injected.push({ type: 'down', code: K.F24, until: Date.now() + 1000 }, { type: 'up', code: K.F24, until: Date.now() + 1000 });
+  h.tap = () => {};
+  h.onDown(K.Ctrl); h.onDown(K.Meta);
+  h.onDown(K.F24); h.onUp(K.F24); // injected: ignored
+  h.onDown(K.D); // real: interrupts right away
+  h.onDown(K.Escape);
+  assert.deepEqual(ev, ['start', 'interrupt', 'cancel']);
+});
+
+test('releasing one of two held Ctrl keys keeps recording', () => {
+  const h = new Hotkey({ isKeyDown: null }); h.tap = () => {};
+  h.configure({ combo: [K.Ctrl, K.Meta], mode: 'hold' });
+  const ev = [];
+  h.on('start', () => { ev.push('start'); h.recording = true; });
+  h.on('stop', () => ev.push('stop'));
+  h.onDown(K.Ctrl); h.onDown(K.Meta); h.onDown(K.CtrlRight);
+  h.onUp(K.CtrlRight);
+  assert.deepEqual(ev, ['start']);
+  h.onUp(K.Ctrl);
+  assert.deepEqual(ev, ['start', 'stop']);
+});
+
+test('modifiers whose key-up was missed are dropped using the real key state', () => {
+  const physical = new Set([0x5B]); // only Win is really down
+  const h = new Hotkey({ isKeyDown: (vk) => physical.has(vk) }); h.tap = () => {};
+  h.configure({ combo: [K.Meta, K.Space], mode: 'hold' });
+  let started = 0; h.on('start', () => started++);
+  h.raw.set(K.Shift, Date.now()); // stale: Windows says Shift is up
+  h.onDown(K.Meta); h.onDown(K.Space);
+  assert.equal(started, 1);
+});
+
+test('waitForModifiersReleased reports a timeout', async () => {
+  const h = new Hotkey({ isKeyDown: (vk) => vk === 0xA2 });
+  assert.equal(await h.waitForModifiersReleased(60), false);
+  const free = new Hotkey({ isKeyDown: () => false });
+  assert.equal(await free.waitForModifiersReleased(60), true);
 });

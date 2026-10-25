@@ -10,13 +10,16 @@
   --text: oklch(0.95 0.005 260);
   --text-2: oklch(0.76 0.01 260);
   --text-3: oklch(0.70 0.012 260);
-  --accent: oklch(0.66 0.16 258);
-  --accent-hover: oklch(0.71 0.15 258);
+  --accent: oklch(0.70 0.15 258); /* text, links, focus on dark surfaces */
+  --accent-fill: oklch(0.50 0.19 258); /* button fills: white text stays above 4.5:1 */
+  --accent-fill-hover: oklch(0.45 0.19 258);
   --accent-fg: oklch(0.99 0 0);
   --accent-soft: oklch(0.66 0.16 258 / 0.16);
   --focus: oklch(0.74 0.14 258);
-  --danger: oklch(0.66 0.19 25);
-  --danger-soft: oklch(0.66 0.19 25 / 0.14);
+  --danger: oklch(0.70 0.17 25);
+  --danger-fill: oklch(0.52 0.19 25);
+  --danger-soft: oklch(0.70 0.17 25 / 0.14);
+  --control-border: oklch(0.56 0.012 260); /* inputs need 3:1 against their fill */
   --success: oklch(0.74 0.14 155);
   --warn: oklch(0.80 0.13 80);
   --warn-soft: oklch(0.80 0.13 80 / 0.12);
@@ -45,11 +48,14 @@
     --text: oklch(0.22 0.01 260);
     --text-2: oklch(0.42 0.012 260);
     --text-3: oklch(0.50 0.012 260);
-    --accent: oklch(0.53 0.18 258);
-    --accent-hover: oklch(0.48 0.18 258);
+    --accent: oklch(0.50 0.18 258);
+    --accent-fill: oklch(0.50 0.18 258);
+    --accent-fill-hover: oklch(0.45 0.18 258);
     --accent-soft: oklch(0.53 0.18 258 / 0.10);
     --focus: oklch(0.53 0.18 258);
-    --danger: oklch(0.55 0.2 25);
+    --danger: oklch(0.52 0.2 25);
+    --danger-fill: oklch(0.52 0.2 25);
+    --control-border: oklch(0.62 0.01 260);
     --danger-soft: oklch(0.55 0.2 25 / 0.10);
     --success: oklch(0.55 0.14 155);
     --warn: oklch(0.55 0.12 70);

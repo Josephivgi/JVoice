@@ -5,7 +5,7 @@ const INVOKE = new Set([
   'settings:get', 'settings:set', 'key:set', 'key:clear', 'key:info', 'models:list',
   'history:list', 'history:delete', 'history:clear', 'history:retry', 'clipboard:write', 'stats',
   'dict:list', 'dict:save', 'dict:delete', 'hotkey:capture', 'dictation:toggle', 'status',
-  'app:info', 'open:external', 'open:mic-settings',
+  'app:info', 'open:external', 'open:mic-settings', 'issue:dismiss',
 ]);
 const EVENTS = new Set(['nav', 'status', 'history:changed', 'hotkey:capture', 'overlay:state', 'rec:start', 'rec:stop', 'rec:cancel']);
 const SEND = new Set(['rec:done', 'rec:error', 'rec:limit']);

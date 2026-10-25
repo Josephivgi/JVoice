@@ -110,7 +110,24 @@ function renderStatus() {
   $('statusText').textContent = text;
   $('heroKeys').classList.toggle('live', status.state === 'recording');
 }
-api.on('status', (s) => { status = s; renderStatus(); });
+api.on('status', (s) => { status = s; renderStatus(); renderIssue(); });
+
+const ISSUE_ACTIONS = {
+  mic: ['Open Settings', () => go('settings')],
+  key: ['Check key', () => go('settings')],
+  credits: ['Add credits', () => api.invoke('open:external', 'https://openrouter.ai/settings/credits')],
+  history: ['Open History', () => go('history')],
+};
+function renderIssue() {
+  const issue = status.issue;
+  $('issue').hidden = !issue || !settings?.hasKey;
+  if (!issue) return;
+  $('issueText').textContent = issue.message;
+  const action = ISSUE_ACTIONS[issue.action];
+  $('issueAction').hidden = !action;
+  if (action) { $('issueAction').textContent = action[0]; $('issueAction').onclick = action[1]; }
+}
+$('issueDismiss').addEventListener('click', () => api.invoke('issue:dismiss'));
 
 // ---------- home ----------
 function renderHero() {
@@ -121,6 +138,7 @@ function renderHero() {
   const out = settings.outputMode === 'paste' ? 'the text is typed wherever your cursor is' : 'the text is copied so you can paste it';
   $('heroSub').textContent = hold ? `Let go and ${out}.` : `Press them again and ${out}.`;
   $('setup').hidden = settings.hasKey;
+  $('homeReady').hidden = !settings.hasKey;
 }
 
 async function loadHome() {
@@ -130,6 +148,7 @@ async function loadHome() {
     $('stToday').textContent = st.todayWords.toLocaleString();
     $('stWords').textContent = st.words.toLocaleString();
     $('stWpm').textContent = `${st.wpm} wpm`;
+    $('stats').hidden = st.total === 0;
     $('stCost').textContent = `$${st.cost < 10 ? st.cost.toFixed(st.cost < 0.01 && st.cost > 0 ? 4 : 2) : st.cost.toFixed(2)}`;
     renderHistory($('recent'), items.slice(0, 3), 'Nothing yet. Your dictations show up here.');
   } catch (err) { toast(err.message, true); }
@@ -146,7 +165,9 @@ async function saveKey(input, msg, btn) {
     settings = r.settings;
     input.value = '';
     toast('Key saved');
-    renderHero(); renderStatus(); renderKey(r.info);
+    keyEditing = false;
+    renderHero(); renderStatus(); renderIssue(); renderKey(r.info);
+    if (!$('page-home').hidden) { loadHome(); $('tryBox').focus(); }
     return true;
   } catch (err) {
     msg.textContent = err.message;
@@ -224,18 +245,25 @@ async function loadDictionary() {
   try { renderDictionary(await api.invoke('dict:list')); } catch (err) { toast(err.message, true); }
 }
 function renderDictionary(rows) {
+  $('dictEmpty').hidden = rows.length > 0;
   $('dictList').replaceChildren(...rows.map((r) => el('li', {},
     el('span', { class: 'term' }, r.term),
     el('span', { class: 'heard' }, r.heard_as ? `heard as ${r.heard_as}` : ''),
     el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Edit', 'aria-label': `Edit ${r.term}`, onclick: () => {
-      editingId = r.id; $('dictTerm').value = r.term; $('dictHeard').value = r.heard_as; $('dictSubmit').textContent = 'Save'; $('dictTerm').focus();
+      editingId = r.id; $('dictTerm').value = r.term; $('dictHeard').value = r.heard_as; $('dictSubmit').textContent = 'Save';
+      $('dictCancel').hidden = false; $('dictEditing').hidden = false; $('dictEditing').textContent = `Editing ${r.term}`;
+      $('dictTerm').focus();
     } }, svg(ICONS.edit)),
     el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Delete', 'aria-label': `Delete ${r.term}`, onclick: async () => {
       renderDictionary(await api.invoke('dict:delete', r.id));
       if (editingId === r.id) resetDictForm();
     } }, svg(ICONS.trash)))));
 }
-function resetDictForm() { editingId = null; $('dictForm').reset(); $('dictSubmit').textContent = 'Add'; }
+function resetDictForm() {
+  editingId = null; $('dictForm').reset(); $('dictSubmit').textContent = 'Add';
+  $('dictCancel').hidden = true; $('dictEditing').hidden = true; $('dictMsg').textContent = '';
+}
+$('dictCancel').addEventListener('click', resetDictForm);
 $('dictForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('dictMsg').textContent = '';
@@ -255,9 +283,11 @@ async function save(patch, quiet = false) {
   } catch (err) { toast(err.message, true); renderSettings(); }
 }
 
+let keyEditing = false;
 function renderKey(info) {
-  $('keyView').hidden = !settings.hasKey;
-  $('keyForm').hidden = settings.hasKey;
+  const editing = !settings.hasKey || keyEditing;
+  $('keyView').hidden = editing;
+  $('keyForm').hidden = !editing;
   $('keyCancel').hidden = !settings.hasKey;
   $('keyMasked').textContent = settings.keyMasked;
   if (info === undefined) return;
@@ -272,13 +302,14 @@ async function loadKeyInfo() {
   $('keyInfo').textContent = 'Checking key…';
   try { renderKey(await api.invoke('key:info')); } catch (err) { $('keyInfo').textContent = err.message; }
 }
-$('keyChange').addEventListener('click', () => { $('keyView').hidden = true; $('keyForm').hidden = false; $('keyCancel').hidden = false; $('keyInput').focus(); });
-$('keyCancel').addEventListener('click', () => { $('keyMsg').textContent = ''; $('keyInput').value = ''; renderKey(); });
+$('keyChange').addEventListener('click', () => { keyEditing = true; renderKey(); $('keyInput').focus(); });
+$('keyCancel').addEventListener('click', () => { keyEditing = false; $('keyMsg').textContent = ''; $('keyInput').value = ''; renderKey(); });
 $('keyForm').addEventListener('submit', async (e) => { e.preventDefault(); await saveKey($('keyInput'), $('keyMsg'), $('keySave')); });
 $('keyRemove').addEventListener('click', async () => {
   if (!await confirmBox('Remove your key?', 'JVoice cannot transcribe until you add a key again.', 'Remove key')) return;
   settings = await api.invoke('key:clear');
-  renderKey(null); renderHero(); renderStatus();
+  keyEditing = false;
+  renderKey(null); renderHero(); renderStatus(); renderIssue();
 });
 
 const LANGS = [['', 'Auto detect'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['pl', 'Polish'], ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['sv', 'Swedish'], ['da', 'Danish'], ['no', 'Norwegian'], ['fi', 'Finnish'], ['cs', 'Czech'], ['el', 'Greek'], ['id', 'Indonesian'], ['vi', 'Vietnamese'], ['th', 'Thai']];
@@ -324,6 +355,7 @@ function renderSettings() {
   setRadio('[data-output]', 'output', settings.outputMode);
   $('restoreClipboard').checked = settings.restoreClipboard;
   $('restoreClipboard').disabled = settings.outputMode !== 'paste';
+  $('restoreHelp').textContent = settings.outputMode === 'paste' ? 'Puts back what you had copied after pasting.' : 'Not used in Copy only mode, since the text has to stay on the clipboard.';
   $('sounds').checked = settings.sounds;
   $('launchAtLogin').checked = settings.launchAtLogin;
   $('keepHistory').checked = settings.keepHistory;
@@ -347,20 +379,27 @@ $('aiModel').addEventListener('change', (e) => {
 });
 $('aiModel').addEventListener('input', renderPrice);
 
+let modelsState = 'idle'; // idle | loading | ready | error
+let modelsError = '';
 function renderPrice() {
+  $('aiModelRetry').hidden = modelsState !== 'error';
+  if (modelsState === 'error') { $('aiPrice').textContent = `Could not load the model list: ${modelsError}`; return; }
   const m = models.find((x) => x.id === $('aiModel').value.trim());
-  if (!m) { $('aiPrice').textContent = models.length ? 'Pick any OpenRouter chat model.' : 'Loading models…'; return; }
+  if (!m) { $('aiPrice').textContent = modelsState === 'loading' ? 'Loading models…' : 'Pick any OpenRouter chat model.'; return; }
   const per = (p) => (p * 1e6 < 1 ? `$${(p * 1e6).toFixed(2)}` : `$${(p * 1e6).toFixed(1)}`);
   $('aiPrice').textContent = `${m.name}. ${per(m.prompt)} in, ${per(m.completion)} out per million tokens.`;
 }
-async function loadModels() {
-  if (models.length) return renderPrice();
+async function loadModels(force = false) {
+  if (modelsState === 'loading' || (modelsState === 'ready' && !force)) return renderPrice();
+  modelsState = 'loading'; renderPrice();
   try {
-    models = await api.invoke('models:list');
+    models = await api.invoke('models:list', force);
     $('aiModels').replaceChildren(...models.map((m) => el('option', { value: m.id }, m.name)));
-    renderPrice();
-  } catch (err) { $('aiPrice').textContent = `Could not load the model list: ${err.message}`; }
+    modelsState = 'ready';
+  } catch (err) { modelsState = 'error'; modelsError = err.message; }
+  renderPrice();
 }
+$('aiModelRetry').addEventListener('click', () => loadModels(true));
 
 // Shortcut capture
 let capturedCombo = null;
@@ -370,6 +409,7 @@ $('hkChange').addEventListener('click', async () => {
   $('hkMsg').textContent = '';
   $('hkSave').disabled = true;
   try { await api.invoke('hotkey:capture', true); } catch (err) { toast(err.message, true); return; }
+  hkListening = true;
   $('hkDialog').showModal();
 });
 api.on('hotkey:capture', (c) => {
@@ -379,13 +419,20 @@ api.on('hotkey:capture', (c) => {
   $('hkMsg').textContent = c.error || '';
   capturedCombo = c.error ? null : c.combo;
   $('hkSave').disabled = !capturedCombo;
-  if (!capturedCombo) api.invoke('hotkey:capture', true); // listen again
+  hkListening = !capturedCombo;
+  if (capturedCombo) $('hkSave').focus();
+  else api.invoke('hotkey:capture', true); // listen again
 });
-// Keys typed into the dialog must not act on the page (Space would press buttons).
-$('hkDialog').addEventListener('keydown', (e) => { if (e.key !== 'Tab') e.preventDefault(); if (e.key === 'Escape') e.stopPropagation(); });
+// While listening for a combo, keys must not act on the dialog (Space would press a button).
+// Esc still closes it, and once a combo is captured the buttons work normally again.
+let hkListening = false;
+$('hkDialog').addEventListener('keydown', (e) => {
+  if (!hkListening || e.key === 'Escape' || e.key === 'Tab') return;
+  e.preventDefault();
+});
 $('hkCancel').addEventListener('click', () => $('hkDialog').close());
 $('hkSave').addEventListener('click', async () => { if (capturedCombo) { await save({ hotkey: capturedCombo }); $('hkDialog').close(); } });
-$('hkDialog').addEventListener('close', () => api.invoke('hotkey:capture', false));
+$('hkDialog').addEventListener('close', () => { hkListening = false; api.invoke('hotkey:capture', false); });
 
 // Microphone list and test meter
 let micTest = null;
@@ -410,27 +457,38 @@ async function loadMics() {
 }
 navigator.mediaDevices.addEventListener('devicechange', () => { if (!$('page-settings').hidden) loadMics(); });
 $('micSelect').addEventListener('change', (e) => { save({ micDeviceId: e.target.value }); if (micTest) { stopMicTest(); startMicTest(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopMicTest(); });
 
+let micGen = 0;
 async function startMicTest() {
+  if (micTest) return;
+  const gen = ++micGen;
+  $('micTest').disabled = true;
   try {
     const id = $('micSelect').value;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { exact: id } } : true });
+    if (gen !== micGen || $('page-settings').hidden) { stream.getTracks().forEach((t) => t.stop()); return; }
     const ctx = new AudioContext();
     const an = ctx.createAnalyser(); an.fftSize = 1024;
     ctx.createMediaStreamSource(stream).connect(an);
     const data = new Float32Array(an.fftSize);
-    micTest = { stream, ctx, raf: 0 };
+    const test = micTest = { stream, ctx, raf: 0 };
     const tick = () => {
+      if (micTest !== test) return;
       an.getFloatTimeDomainData(data);
       let s = 0; for (const v of data) s += v * v;
       $('micMeter').style.width = `${Math.min(100, Math.sqrt(s / data.length) * 900)}%`;
-      micTest.raf = requestAnimationFrame(tick);
+      test.raf = requestAnimationFrame(tick);
     };
     tick();
     $('micTest').textContent = 'Stop test';
-  } catch (err) { toast(err.name === 'NotAllowedError' ? 'Microphone access is blocked.' : `Could not open the microphone: ${err.message}`, true); }
+  } catch (err) {
+    if (gen === micGen) toast(err.name === 'NotAllowedError' ? 'Microphone access is blocked.' : `Could not open the microphone: ${err.message}`, true);
+  } finally { if (gen === micGen) $('micTest').disabled = false; }
 }
 function stopMicTest() {
+  micGen++;
+  $('micTest').disabled = false;
   if (!micTest) return;
   cancelAnimationFrame(micTest.raf);
   micTest.stream.getTracks().forEach((t) => t.stop());
@@ -450,6 +508,7 @@ $('micTest').addEventListener('click', () => (micTest ? stopMicTest() : startMic
     if (!info.packaged) $('loginHelp').textContent = 'Available in the installed app.';
     $('launchAtLogin').disabled = !info.packaged;
     renderStatus();
+    renderIssue();
     go('home');
   } catch (err) { toast(err.message, true); }
 })();

@@ -9,11 +9,14 @@ const { Store } = require('./db.cjs');
 const api = require('./openrouter.cjs');
 const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs');
 
+let win32 = null;
+try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpers unavailable', err.message); }
+
 const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
 const TRANSCRIBE_ARG = process.argv.indexOf('--transcribe');
 const SHOTS_ARG = process.argv.indexOf('--shots');
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0;
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || process.argv.includes('--import-key');
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
 
@@ -52,7 +55,7 @@ const toMain = (channel, payload) => send(mainWin, channel, payload);
 
 function createMainWindow() {
   mainWin = new BrowserWindow({
-    width: 980, height: 680, minWidth: 760, minHeight: 540,
+    width: 980, height: 680, minWidth: 640, minHeight: 520,
     show: false, title: 'JVoice', icon: ICON, backgroundColor: '#15171c',
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
@@ -97,6 +100,11 @@ function createOverlay() {
   overlayWin.loadFile(path.join(UI, 'overlay.html'));
 }
 
+function recreateOverlay() {
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.destroy();
+  createOverlay();
+}
+
 function showOverlay() {
   if (HEADLESS || !overlayWin || overlayWin.isDestroyed()) return;
   const wa = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
@@ -130,19 +138,35 @@ function buildTrayMenu() {
   ]));
 }
 
-function broadcastStatus() {
-  toMain('status', { state: dictation.state, paused: hotkey.paused, hookOk: hotkey.started });
+// Last problem worth showing on Home (microphone blocked, key rejected, ...), until dismissed or fixed.
+let lastIssue = null;
+function reportIssue(message, action = '') {
+  lastIssue = message ? { message, action, at: Date.now() } : null;
+  broadcastStatus();
+}
+function statusPayload() {
+  return { state: dictation.state, paused: hotkey.paused, hookOk: hotkey.started, issue: lastIssue };
+}
+function broadcastStatus() { toMain('status', statusPayload()); }
+function issueAction(err) {
+  if (err.status === 401 || err.status === 403) return 'key';
+  if (err.status === 402) return 'credits';
+  return '';
 }
 
 // ---------- WAV helper for the --transcribe test mode ----------
 function readWav(file) { return fs.readFileSync(file); }
 
 // ---------- dictation pipeline ----------
+// Every recording gets a session id. Cancel bumps the id, so late replies from the recorder
+// or the network for an old session are ignored instead of touching the new one.
 const dictation = {
   state: 'idle', // idle | recording | processing
+  session: 0,
   startedAt: 0,
   abort: null,
-  pendingStop: null,
+  pendingStop: null, // { id, resolve }
+  target: null, // foreground window when recording started
 
   setState(s) {
     this.state = s;
@@ -158,13 +182,15 @@ const dictation = {
     const s = store.getSettings();
     if (!getKey()) {
       overlayState('error', { message: 'Add your OpenRouter key in JVoice first.' }, 2600);
-      showMain('settings');
+      showMain('home');
       return;
     }
+    const id = ++this.session;
+    this.target = win32 ? win32.foregroundWindow() : null;
     this.setState('recording');
     this.startedAt = Date.now();
     showOverlay();
-    send(overlayWin, 'rec:start', { deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds, mode: hotkey.mode, combo: comboLabel(hotkey.combo) });
+    send(overlayWin, 'rec:start', { id, deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds });
   },
 
   interrupt() {
@@ -173,8 +199,11 @@ const dictation = {
   },
 
   cancel(silent = false) {
-    if (this.state === 'recording') send(overlayWin, 'rec:cancel');
-    if (this.abort) this.abort.abort();
+    if (this.state === 'idle') return;
+    const wasRecording = this.state === 'recording';
+    this.session++;
+    if (wasRecording) send(overlayWin, 'rec:cancel');
+    if (this.abort) { this.abort.abort(); this.abort = null; }
     if (this.pendingStop) { this.pendingStop.resolve(null); this.pendingStop = null; }
     this.setState('idle');
     if (silent) overlayState('hidden'); else overlayState('cancelled', {}, 900);
@@ -182,42 +211,63 @@ const dictation = {
 
   stop() {
     if (this.state !== 'recording') return;
+    const id = this.session;
     this.setState('processing');
     overlayState('transcribing');
-    const p = new Promise((resolve) => { this.pendingStop = { resolve }; });
-    send(overlayWin, 'rec:stop');
-    const timer = setTimeout(() => this.pendingStop?.resolve({ error: 'The recorder did not respond.' }), 5000);
-    p.then((rec) => { clearTimeout(timer); this.pendingStop = null; if (rec) this.process(rec); });
+    const p = new Promise((resolve) => { this.pendingStop = { id, resolve }; });
+    send(overlayWin, 'rec:stop', { id });
+    const timer = setTimeout(() => {
+      if (this.pendingStop?.id !== id) return;
+      this.pendingStop.resolve({ id, error: 'The recorder stopped responding, so JVoice restarted it. Try again.' });
+      recreateOverlay();
+    }, 5000);
+    p.then((rec) => {
+      clearTimeout(timer);
+      if (this.pendingStop?.id === id) this.pendingStop = null;
+      if (rec && id === this.session) this.process(id, rec);
+    });
   },
 
-  onRecorded(rec) { this.pendingStop?.resolve(rec); },
+  onRecorded(rec) {
+    if (this.pendingStop && rec?.id === this.pendingStop.id) this.pendingStop.resolve(rec);
+  },
 
-  onRecorderError(message) {
-    if (this.state === 'idle') return;
-    this.pendingStop?.resolve(null);
+  onRecorderError({ id, message }) {
+    if (id !== this.session || this.state === 'idle') return;
+    if (this.pendingStop) { this.pendingStop.resolve(null); this.pendingStop = null; }
+    this.session++;
     this.setState('idle');
-    overlayState('error', { message }, 3200);
+    overlayState('error', { message }, 3600);
+    reportIssue(message, 'mic');
   },
 
-  async process(rec) {
-    if (rec.error) { this.setState('idle'); overlayState('error', { message: rec.error }, 3000); return; }
-    const wav = Buffer.from(rec.wav);
-    if (rec.ms < 350) { this.setState('idle'); overlayState('error', { message: 'Too short. Hold the keys while you talk.' }, 1800); return; }
-    if (rec.peak < 0.01) { this.setState('idle'); overlayState('error', { message: 'No sound from the microphone. Check Settings.' }, 3000); return; }
-    this.abort = new AbortController();
-    const signal = this.abort.signal;
+  async process(id, rec) {
+    const current = () => id === this.session;
+    const fail = (message, ms) => { if (current()) overlayState('error', { message }, ms); };
+    const ac = new AbortController();
+    this.abort = ac;
     try {
-      const result = await runPipeline({ wav, ms: rec.ms, signal, onStage: (st) => overlayState(st) });
-      if (signal.aborted) return;
-      if (!result.final) { overlayState('error', { message: 'No speech detected.' }, 1800); return; }
-      const pasted = await output(result.final);
-      overlayState('done', { words: result.words, pasted, note: result.aiError ? 'AI cleanup failed, used the raw text.' : '' }, result.aiError ? 2600 : 1300);
+      if (rec.error) return fail(rec.error, 3600);
+      if (rec.ms < 350) return fail('Too short. Hold the keys while you talk.', 1800);
+      if (rec.peak < 0.01) {
+        reportIssue('JVoice heard only silence from your microphone. Check the input device in Settings.', 'mic');
+        return fail('No sound from the microphone. Check Settings.', 3000);
+      }
+      const result = await runPipeline({ wav: Buffer.from(rec.wav), ms: rec.ms, signal: ac.signal, onStage: (st) => { if (current()) overlayState(st); } });
+      if (ac.signal.aborted || !current()) return;
+      if (!result.final) return fail('No speech detected.', 1800);
+      const out = await output(result.final, { signal: ac.signal, target: this.target });
+      if (ac.signal.aborted || !current()) return;
+      if (lastIssue && lastIssue.action !== 'history') reportIssue(null);
+      const note = out.note || (result.aiError ? 'AI cleanup failed, so the raw text was used.' : '');
+      overlayState('done', { words: result.words, pasted: out.pasted, note }, note ? 3000 : 1300);
     } catch (err) {
-      if (signal.aborted) return;
-      overlayState('error', { message: err.message }, 3600);
+      if (ac.signal.aborted || !current()) return;
+      fail(err.message, 3600);
+      reportIssue(err.message, issueAction(err) || 'history');
     } finally {
-      this.abort = null;
-      if (this.state === 'processing') this.setState('idle');
+      if (this.abort === ac) this.abort = null;
+      if (current() && this.state === 'processing') this.setState('idle');
     }
   },
 };
@@ -277,30 +327,39 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   return { raw, final, words, cost, aiError };
 }
 
-async function output(text) {
+// Puts the text into the app the user was in. Falls back to copy-only whenever pasting could go wrong.
+async function output(text, { signal, target } = {}) {
   const s = store.getSettings();
-  const saved = s.restoreClipboard ? snapshotClipboard() : null;
-  clipboard.writeText(text);
-  if (s.outputMode !== 'paste') return false;
-  await hotkey.waitForModifiersReleased();
-  hotkey.paste();
-  if (saved) {
-    setTimeout(() => { if (clipboard.readText() === text) restoreClipboard(saved); }, 700);
+  if (s.outputMode !== 'paste') { clipboard.writeText(text); return { pasted: false }; }
+  const released = await hotkey.waitForModifiersReleased(1500, signal);
+  if (signal?.aborted) return { pasted: false };
+  if (!released) { clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
+  const now = win32 ? win32.foregroundWindow() : null;
+  if (target && now && now.id !== target.id) {
+    clipboard.writeText(text);
+    return { pasted: false, note: 'You switched windows, so the text was copied instead.' };
   }
-  return true;
+  let snap = null;
+  if (s.restoreClipboard && win32) {
+    try { snap = await win32.snapshotClipboard(); } catch { snap = null; }
+  }
+  if (signal?.aborted) return { pasted: false };
+  clipboard.writeText(text);
+  const seq = win32 ? win32.clipboardSequence() : 0;
+  hotkey.paste();
+  if (snap) {
+    setTimeout(async () => {
+      // Only put the old clipboard back if nothing else was copied in the meantime.
+      if (win32.clipboardSequence() !== seq) return;
+      try { await win32.restoreClipboard(snap, clipboardOwner()); } catch (err) { console.error('clipboard restore failed', err.message); }
+    }, 700);
+  }
+  return { pasted: true };
 }
 
-function snapshotClipboard() {
-  const img = clipboard.readImage();
-  return { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: img.isEmpty() ? null : img };
-}
-function restoreClipboard(c) {
-  const data = {};
-  if (c.text) data.text = c.text;
-  if (c.html) data.html = c.html;
-  if (c.rtf) data.rtf = c.rtf;
-  if (c.image) data.image = c.image;
-  if (Object.keys(data).length) clipboard.write(data); else clipboard.clear();
+function clipboardOwner() {
+  const w = overlayWin && !overlayWin.isDestroyed() ? overlayWin : mainWin;
+  return win32.hwndOf(w.getNativeWindowHandle());
 }
 
 // ---------- IPC ----------
@@ -346,6 +405,7 @@ function registerIpc() {
     if (!/^sk-or-/.test(key)) throw new Error('That does not look like an OpenRouter key. Keys start with sk-or-.');
     const info = await api.keyInfo(key);
     setKey(key);
+    if (lastIssue && ['key', 'credits'].includes(lastIssue.action)) reportIssue(null);
     return { settings: publicSettings(), info };
   });
   handle('key:clear', () => { setKey(''); return publicSettings(); });
@@ -403,7 +463,8 @@ function registerIpc() {
   });
 
   handle('dictation:toggle', () => { dictation.toggle(); return dictation.state; });
-  handle('status', () => ({ state: dictation.state, paused: hotkey.paused, hookOk: hotkey.started }));
+  handle('status', () => statusPayload());
+  handle('issue:dismiss', () => { reportIssue(null); return true; });
   handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
   handle('open:external', (url) => {
     if (!/^https:\/\/(openrouter\.ai|github\.com)\//.test(url)) throw new Error('Blocked link.');
@@ -413,8 +474,8 @@ function registerIpc() {
 
   // Overlay recorder events (fire and forget).
   ipcMain.on('rec:done', (_e, rec) => dictation.onRecorded(rec));
-  ipcMain.on('rec:error', (_e, message) => dictation.onRecorderError(String(message)));
-  ipcMain.on('rec:limit', () => dictation.stop());
+  ipcMain.on('rec:error', (_e, err) => dictation.onRecorderError({ id: err?.id, message: String(err?.message ?? 'The microphone failed.') }));
+  ipcMain.on('rec:limit', (_e, id) => { if (id === dictation.session) dictation.stop(); });
 }
 
 // ---------- test modes ----------
@@ -513,6 +574,16 @@ app.whenReady().then(async () => {
 
   if (SMOKE) return runSmoke();
   if (TRANSCRIBE_ARG > 0) return runTranscribeFile(process.argv[TRANSCRIBE_ARG + 1]);
+  if (process.argv.includes('--import-key')) {
+    // Headless key import for setup scripts: reads JVOICE_IMPORT_KEY, checks it with OpenRouter, stores it encrypted.
+    try {
+      const key = String(process.env.JVOICE_IMPORT_KEY || '').trim();
+      const info = await api.keyInfo(key);
+      setKey(key);
+      process.stdout.write(`key saved (${maskKey(key)}, usage $${info.usage.toFixed(4)})\n`);
+      return app.exit(0);
+    } catch (err) { process.stderr.write(`ERROR: ${err.message}\n`); return app.exit(1); }
+  }
   if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));
 
   registerIpc();
