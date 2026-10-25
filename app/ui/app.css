@@ -159,7 +159,7 @@ input[type="search"] { width: 220px; }
 .meter span { display: block; height: 100%; width: 0; background: var(--success); transition: width 60ms linear; }
 .ai-body { border-top: 1px solid var(--border); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-4); }
 .ai-body.off { opacity: .45; pointer-events: none; }
-.styles { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2); }
+.styles { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-2); }
 .style { text-align: left; padding: var(--sp-3); border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
 .style span { font-size: var(--fs-sm); color: var(--text-2); line-height: 1.4; }
 .style:hover { border-color: var(--text-3); }

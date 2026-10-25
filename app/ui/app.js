@@ -59,7 +59,7 @@ function when(ts) {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 const secs = (ms) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-const STYLE_NAMES = { clean: 'Light cleanup', intent: 'Intent', custom: 'Custom', raw: 'Raw' };
+const STYLE_NAMES = { clean: 'Light cleanup', rewrite: 'Rewrite', intent: 'Rewrite', custom: 'Rewrite', raw: 'Raw' };
 
 function confirmBox(title, text, yes) {
   return new Promise((resolve) => {
@@ -353,9 +353,6 @@ function renderSettings() {
   $('aiBody').classList.toggle('off', !settings.aiEnabled);
   $('aiBody').toggleAttribute('inert', !settings.aiEnabled);
   setRadio('[data-style]', 'style', settings.aiStyle);
-  const custom = settings.aiStyle === 'custom';
-  $('customLabel').replaceChildren(custom ? 'Your instructions' : 'Extra instructions ', custom ? '' : el('em', {}, '(optional)'));
-  $('aiCustom').placeholder = custom ? 'Rewrite what I say as a short, friendly email.' : 'Use British spelling. Never use exclamation marks.';
   if (document.activeElement !== $('aiCustom')) $('aiCustom').value = settings.aiCustomPrompt;
   if (document.activeElement !== $('aiModel')) $('aiModel').value = settings.aiModel;
   renderPrice();
@@ -364,6 +361,7 @@ function renderSettings() {
   $('restoreClipboard').disabled = settings.outputMode !== 'paste';
   $('restoreHelp').textContent = settings.outputMode === 'paste' ? 'Puts back what you had copied after pasting.' : 'Not used in Copy only mode, since the text has to stay on the clipboard.';
   $('sounds').checked = settings.sounds;
+  $('charLimit').value = String(settings.charLimit);
   $('launchAtLogin').checked = settings.launchAtLogin;
   $('keepHistory').checked = settings.keepHistory;
   $('maxRecord').value = String(settings.maxRecordSeconds);
@@ -378,6 +376,7 @@ for (const id of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'k
 $('sttModel').addEventListener('change', (e) => save({ sttModel: e.target.value }));
 $('language').addEventListener('change', (e) => save({ language: e.target.value }));
 $('maxRecord').addEventListener('change', (e) => save({ maxRecordSeconds: Number(e.target.value) }));
+$('charLimit').addEventListener('change', (e) => save({ charLimit: Number(e.target.value) }));
 $('aiCustom').addEventListener('change', (e) => save({ aiCustomPrompt: e.target.value }));
 $('aiModel').addEventListener('change', (e) => {
   const v = e.target.value.trim();

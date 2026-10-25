@@ -10,10 +10,11 @@ const DEFAULTS = {
   language: '',
   micDeviceId: '',
   aiEnabled: true,
-  aiModel: 'anthropic/claude-haiku-5.5',
-  aiStyle: 'clean', // 'clean' | 'intent' | 'custom'
+  aiModel: 'deepseek/deepseek-v4.1-flash',
+  aiStyle: 'clean', // 'clean' | 'rewrite'
   aiCustomPrompt: '',
   outputMode: 'paste', // 'paste' | 'copy'
+  charLimit: 0, // longest text to paste in characters; 0 = unlimited
   restoreClipboard: true,
   sounds: true,
   launchAtLogin: false,
@@ -59,6 +60,8 @@ class Store {
         try { out[row.key] = JSON.parse(row.value); } catch { /* keep default */ }
       }
     }
+    // Earlier versions had 'intent' and 'custom' styles; both are now Rewrite.
+    if (!['clean', 'rewrite'].includes(out.aiStyle)) out.aiStyle = 'rewrite';
     return out;
   }
 

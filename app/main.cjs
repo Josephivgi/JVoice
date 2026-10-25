@@ -5,7 +5,7 @@ const {
   app, BrowserWindow, Tray, Menu, ipcMain, clipboard, nativeImage, screen,
   safeStorage, shell, Notification, powerMonitor, session,
 } = require('electron');
-const { Store } = require('./db.cjs');
+const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
 const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs');
 
@@ -340,7 +340,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   if (raw && s.aiEnabled) {
     onStage('improving');
     try {
-      const r = await api.improve({ key, model: s.aiModel, text: raw, style: s.aiStyle, customPrompt: s.aiCustomPrompt, terms, signal });
+      const r = await api.improve({ key, model: s.aiModel, text: raw, style: s.aiStyle, customPrompt: s.aiCustomPrompt, terms, charLimit: s.charLimit, signal });
       cost += r.cost;
       final = api.applyDictionary(r.text, dict) || raw;
     } catch (err) {
@@ -349,6 +349,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
     }
   }
 
+  final = api.capLength(final, s.charLimit);
   const words = api.countWords(final);
   if (s.keepHistory && final) {
     const fields = { status: 'done', raw, final, error: aiError ? `AI cleanup failed: ${aiError}` : '', ai_model: s.aiEnabled && !aiError ? s.aiModel : '', words, cost };
@@ -428,10 +429,12 @@ function registerIpc() {
       clean.hotkey = sortCombo(clean.hotkey);
     }
     if (clean.hotkeyMode && !['hold', 'toggle'].includes(clean.hotkeyMode)) delete clean.hotkeyMode;
-    if (clean.aiStyle && !['clean', 'intent', 'custom'].includes(clean.aiStyle)) delete clean.aiStyle;
+    if (clean.aiStyle && !['clean', 'rewrite'].includes(clean.aiStyle)) delete clean.aiStyle;
     if (clean.outputMode && !['paste', 'copy'].includes(clean.outputMode)) delete clean.outputMode;
+    if ('charLimit' in clean && ![0, 128, 280, 500, 1024].includes(Number(clean.charLimit))) delete clean.charLimit;
+    else if ('charLimit' in clean) clean.charLimit = Number(clean.charLimit);
     if ('sttModel' in clean) clean.sttModel = String(clean.sttModel).trim() || 'elevenlabs/scribe-v2';
-    if ('aiModel' in clean) clean.aiModel = String(clean.aiModel).trim() || 'anthropic/claude-haiku-5.5';
+    if ('aiModel' in clean) clean.aiModel = String(clean.aiModel).trim() || DEFAULTS.aiModel;
     if ('language' in clean) clean.language = String(clean.language).trim().toLowerCase().slice(0, 8);
     store.setSettings(clean);
     if ('launchAtLogin' in clean) applyLoginItem(!!clean.launchAtLogin);

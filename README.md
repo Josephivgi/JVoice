@@ -3,7 +3,7 @@
 Hold a shortcut, talk, let go. JVoice turns your speech into text and types it wherever your cursor is, in any Windows app.
 
 - Speech to text with ElevenLabs Scribe v2, through your OpenRouter key.
-- Optional AI cleanup through any OpenRouter chat model (default Claude Haiku 5.5): removes um and uh, applies "no wait" corrections, adds punctuation. "Show my intent" mode rewrites rambling into short, clear text.
+- Optional AI cleanup through any OpenRouter chat model (default DeepSeek V4.1 Flash): removes um and uh, applies "no wait" corrections, adds punctuation. Or pick Rewrite, and the AI rewrites what you said into clear, polished text.
 - One key for everything: you only need an OpenRouter key.
 
 ## Use it
@@ -19,7 +19,7 @@ JVoice runs in the tray. Closing the window keeps it running; quit from the tray
 - **Shortcut**: any combo of two or more keys, or a single F13 to F24 key. Hold to talk, or press to start and stop.
 - **Microphone**: pick an input device and test the level.
 - **Speech to text**: Scribe v2 or Scribe v2 Medical, auto language or a fixed one.
-- **AI cleanup**: on or off, Light cleanup, Show my intent, or Custom instructions, and the model.
+- **AI cleanup**: on or off, Light cleanup or Rewrite, optional extra instructions, and the model (any OpenRouter chat model).
 - **Output**: type into the active app, or copy only. Keep my clipboard puts back what you had copied, including files and images.
 - **Dictionary**: words JVoice should always spell your way, and what the speech engine writes instead.
 - **History**: every dictation, the raw transcript, and Retry for recordings that failed to transcribe.

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
-const { applyDictionary, countWords, buildSystemPrompt, stripSoundTags } = require('../app/openrouter.cjs');
+const { applyDictionary, countWords, buildSystemPrompt, stripSoundTags, capLength } = require('../app/openrouter.cjs');
 const { Hotkey, validateCombo, comboLabel, K } = require('../app/hotkey.cjs');
 const { Store } = require('../app/db.cjs');
 
@@ -20,11 +20,14 @@ test('countWords handles punctuation and contractions', () => {
   assert.equal(countWords('   '), 0);
 });
 
-test('system prompt carries style, custom text and terms', () => {
-  const p = buildSystemPrompt({ style: 'custom', customPrompt: 'Write as an email.', terms: ['JVoice'] });
-  assert.match(p, /Follow these instructions from the user:\nWrite as an email\./);
+test('system prompt carries style, extra instructions and terms', () => {
+  const p = buildSystemPrompt({ style: 'rewrite', customPrompt: 'Write as an email.', terms: ['JVoice'] });
+  assert.match(p, /Also follow these instructions from the user:\nWrite as an email\./);
+  assert.match(p, /Rewrite the dictation/);
+  assert.match(buildSystemPrompt({ style: 'clean', customPrompt: '', terms: [] }), /Keep the speaker's own words/);
+  // Old style names map to Rewrite.
+  assert.match(buildSystemPrompt({ style: 'intent', customPrompt: '', terms: [] }), /Rewrite the dictation/);
   assert.match(p, /JVoice/);
-  assert.match(buildSystemPrompt({ style: 'intent', customPrompt: '', terms: [] }), /said what the speaker meant|says what the speaker meant/);
 });
 
 test('combo validation', () => {
@@ -202,4 +205,15 @@ test('speech engine sound tags are removed', () => {
   assert.equal(stripSoundTags('(music)'), '');
   assert.equal(stripSoundTags('Hello [laughter] there.'), 'Hello there.');
   assert.equal(stripSoundTags('Call me (after lunch) please.'), 'Call me (after lunch) please.');
+});
+
+test('length limit trims at a sentence or word and never splits emoji', () => {
+  const t = 'First sentence is here. Second sentence goes on and on and on.';
+  assert.equal(capLength(t, 0), t);
+  assert.equal(capLength(t, 1024), t);
+  assert.equal(capLength(t, 40), 'First sentence is here.');
+  assert.equal(capLength('one two three four five six seven', 20), 'one two three four');
+  assert.ok(Array.from(capLength('😀'.repeat(200), 128)).length <= 128);
+  assert.ok(!capLength('😀'.repeat(200), 128).includes('\uFFFD'));
+  assert.match(buildSystemPrompt({ style: 'clean', customPrompt: '', terms: [], charLimit: 280 }), /at most 280 characters/);
 });
