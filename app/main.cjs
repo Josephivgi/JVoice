@@ -470,7 +470,7 @@ async function output(text, { signal, target, clip } = {}) {
   if (signal?.aborted) return { pasted: false };
   // Text that is only on the clipboard for the paste stays out of Windows clipboard history.
   let written = false;
-  if (win32 && s.restoreClipboard) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
+  if (win32 && s.restoreClipboard && snap) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
   if (!written) clipboard.writeText(text);
   if (!sameWindow()) { if (written) clipboard.writeText(text); return switched; }
   if (hotkey.modifiersDown()) { if (written) clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
