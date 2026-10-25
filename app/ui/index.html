@@ -67,6 +67,7 @@
             <button class="btn ghost sm" id="tryClear" type="button">Clear</button>
           </div>
           <textarea id="tryBox" rows="4" placeholder="Click here, then use your shortcut and say something."></textarea>
+          <div class="try-result muted" id="tryResult" aria-live="polite" hidden></div>
         </div>
 
         <dl class="stats" id="stats" hidden>
@@ -175,7 +176,7 @@
             <div class="setting">
               <div class="setting-text"><b>Test</b><span class="muted">Speak and watch the meter.</span></div>
               <div class="row">
-                <div class="meter" aria-hidden="true"><span id="micMeter"></span></div>
+                <div class="meter" id="micMeterWrap" role="meter" aria-label="Input level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="micMeter"></span></div>
                 <button class="btn" id="micTest" type="button">Start test</button>
               </div>
             </div>
@@ -209,21 +210,24 @@
             <div class="ai-body" id="aiBody">
               <div class="styles" role="radiogroup" aria-label="Cleanup style">
                 <button class="style" role="radio" data-style="clean" type="button">
-                  <b>Light cleanup</b><span>Keeps your words. Removes um and uh, fixes punctuation, applies "no wait" corrections.</span>
+                  <b>Light cleanup</b><span>Keeps your words. Removes um and uh, fixes punctuation, and handles "no wait" fixes, so "at 3, no wait, 4" becomes "at 4".</span>
                 </button>
                 <button class="style" role="radio" data-style="rewrite" type="button">
-                  <b>Rewrite</b><span>The AI rewrites what you said into clear, polished text. Your wording may change; your meaning stays.</span>
+                  <b>Rewrite</b><span>Rewrites what you said into clear text. Wording can change. Meaning stays.</span>
                 </button>
               </div>
               <label class="field" id="customWrap">
-                <span id="customLabel">Extra instructions <em>(optional, used with both)</em></span>
+                <span id="customLabel">Extra instructions <em>(optional, used with either style)</em></span>
                 <textarea id="aiCustom" rows="3" placeholder="Use British spelling. Write in a friendly tone."></textarea>
               </label>
               <div class="setting flush">
                 <div class="setting-text"><b>Model</b><span class="muted" id="aiPrice"></span></div>
                 <div class="model-pick">
-                  <input id="aiModel" list="aiModels" spellcheck="false" autocomplete="off" aria-label="AI model">
-                  <button class="btn sm" id="aiModelRetry" type="button" hidden>Retry</button>
+                  <select id="aiModelPreset" aria-label="AI model"></select>
+                  <div class="model-other" id="aiModelOther" hidden>
+                    <input id="aiModel" type="search" list="aiModels" spellcheck="false" autocomplete="off" placeholder="Search models" aria-label="Other model id">
+                    <button class="btn sm" id="aiModelRetry" type="button" hidden>Retry</button>
+                  </div>
                   <datalist id="aiModels"></datalist>
                 </div>
               </div>
@@ -242,13 +246,13 @@
               </div>
             </div>
             <div class="setting">
-              <div class="setting-text"><b>Length limit</b><span class="muted">Longest text JVoice will paste. With AI on, the text is shortened to fit; otherwise it is cut at a word.</span></div>
+              <div class="setting-text"><b>Length limit</b><span class="muted">Longest text JVoice outputs. With AI on, it is shortened to fit. With AI off, it is cut at a word.</span></div>
               <select id="charLimit" aria-label="Length limit">
                 <option value="0">Unlimited</option>
-                <option value="128">128 characters</option>
-                <option value="280">280 characters</option>
-                <option value="500">500 characters</option>
-                <option value="1024">1024 characters</option>
+                <option value="128">Up to 128 characters</option>
+                <option value="280">Up to 280 characters</option>
+                <option value="500">Up to 500 characters</option>
+                <option value="1024">Up to 1024 characters</option>
               </select>
             </div>
             <div class="setting">

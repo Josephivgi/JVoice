@@ -20,6 +20,11 @@ const EnumClipboardFormats = user32.func('uint32 __stdcall EnumClipboardFormats(
 const GetClipboardData = user32.func('void* __stdcall GetClipboardData(uint32)');
 const SetClipboardData = user32.func('void* __stdcall SetClipboardData(uint32, void*)');
 const GetClipboardSequenceNumber = user32.func('uint32 __stdcall GetClipboardSequenceNumber()');
+const IsClipboardFormatAvailable = user32.func('int __stdcall IsClipboardFormatAvailable(uint32)');
+const RegisterClipboardFormatW = user32.func('uint32 __stdcall RegisterClipboardFormatW(str16)');
+const OpenProcess = kernel32.func('void* __stdcall OpenProcess(uint32, int, uint32)');
+const CloseHandle = kernel32.func('int __stdcall CloseHandle(void*)');
+const QueryFullProcessImageNameW = kernel32.func('int __stdcall QueryFullProcessImageNameW(void*, uint32, _Out_ uint16*, _Inout_ uint32*)');
 const GlobalAlloc = kernel32.func('void* __stdcall GlobalAlloc(uint32, size_t)');
 const GlobalFree = kernel32.func('void* __stdcall GlobalFree(void*)');
 const GlobalLock = kernel32.func('void* __stdcall GlobalLock(void*)');
@@ -32,18 +37,39 @@ const SetEnhMetaFileBits = gdi32.func('void* __stdcall SetEnhMetaFileBits(uint32
 const DeleteEnhMetaFile = gdi32.func('int __stdcall DeleteEnhMetaFile(void*)');
 
 const GMEM_MOVEABLE = 0x0002;
-const CF_ENHMETAFILE = 14;
+const CF_TEXT = 1, CF_OEMTEXT = 7, CF_DIB = 8, CF_UNICODETEXT = 13, CF_ENHMETAFILE = 14, CF_LOCALE = 16, CF_DIBV5 = 17;
 // Formats whose handle is not global memory. CF_BITMAP and CF_METAFILEPICT are rebuilt by Windows
-// from CF_DIB and CF_ENHMETAFILE, which are kept. Palette and owner-display formats cannot be copied.
+// from CF_DIB and CF_ENHMETAFILE, which are kept. Palette and owner-display formats cannot be copied,
+// and private (0x200-0x2FF) and GDI object (0x300-0x3FF) formats are not memory handles either.
 const SKIP = new Set([2, 3, 9, 0x0080, 0x0082, 0x0083, 0x008E]);
+const skipFormat = (f) => SKIP.has(f) || (f >= 0x200 && f <= 0x3FF);
 const MAX_BYTES = 64 * 1024 * 1024;
+// Password managers mark secrets with these, so JVoice never copies them and never puts them back.
+const SENSITIVE = ['ExcludeClipboardContentFromMonitorProcessing', 'Clipboard Viewer Ignore'].map((n) => RegisterClipboardFormatW(n));
+const CF_NO_HISTORY = RegisterClipboardFormatW('CanIncludeInClipboardHistory');
+const CF_NO_CLOUD = RegisterClipboardFormatW('CanUploadToCloudClipboard');
 
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+function processName(pid) {
+  const h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (!h) return '';
+  try {
+    const buf = new Uint16Array(1024), len = [buf.length];
+    if (!QueryFullProcessImageNameW(h, 0, buf, len)) return '';
+    const full = String.fromCharCode(...buf.subarray(0, len[0]));
+    return full.slice(full.lastIndexOf('\\') + 1).toLowerCase();
+  } finally { CloseHandle(h); }
+}
+
+// { id, pid, exe } of the window the user is typing in. exe is the lower-case file name, '' if unknown.
 function foregroundWindow() {
   const h = GetForegroundWindow();
   if (!h) return null;
   const pid = [0];
   GetWindowThreadProcessId(h, pid);
-  return { id: String(koffi.address(h)), pid: pid[0] };
+  let exe = '';
+  try { exe = processName(pid[0]); } catch { /* elevated or exited process */ }
+  return { id: String(koffi.address(h)), pid: pid[0], exe };
 }
 
 const isKeyDown = (vk) => (GetAsyncKeyState(vk) & 0x8000) !== 0;
@@ -69,13 +95,21 @@ async function withClipboard(fn, owner = 0n) {
   throw new Error('The clipboard is busy.');
 }
 
-// Returns { formats: [{format, data}], complete } or null when the clipboard is too large to copy.
+// Returns { formats: [{format, data}], complete }, or null when the clipboard is too large to copy
+// or holds a secret that its app marked as private.
 async function snapshotClipboard() {
   return withClipboard(() => {
+    if (SENSITIVE.some((f) => f && IsClipboardFormatAvailable(f))) return null;
+    const list = [];
+    for (let f = EnumClipboardFormats(0); f; f = EnumClipboardFormats(f)) list.push(f);
+    // Windows makes these from CF_UNICODETEXT and CF_DIB on its own, so copying them doubles the work.
+    const synth = new Set();
+    if (list.includes(CF_UNICODETEXT)) [CF_TEXT, CF_OEMTEXT, CF_LOCALE].forEach((f) => synth.add(f));
+    if (list.includes(CF_DIB)) synth.add(CF_DIBV5);
     const formats = [];
     let total = 0, complete = true;
-    for (let f = EnumClipboardFormats(0); f; f = EnumClipboardFormats(f)) {
-      if (SKIP.has(f)) continue;
+    for (const f of list) {
+      if (skipFormat(f) || synth.has(f)) continue;
       const h = GetClipboardData(f);
       if (!h) { complete = false; continue; }
       if (f === CF_ENHMETAFILE) {
@@ -139,8 +173,29 @@ async function restoreClipboard(snap, owner, expectedSeq) {
   }, owner);
 }
 
+// Puts text on the clipboard for a paste, marked so Windows clipboard history and cloud sync skip it.
+async function setClipboardText(text, owner) {
+  return withClipboard(() => {
+    const units = Buffer.from(`${text}\0`, 'utf16le');
+    const parts = [{ format: CF_UNICODETEXT, data: units }];
+    const zero = Buffer.alloc(4); // DWORD 0 = "no"
+    if (CF_NO_HISTORY) parts.push({ format: CF_NO_HISTORY, data: zero });
+    if (CF_NO_CLOUD) parts.push({ format: CF_NO_CLOUD, data: zero });
+    const handles = [];
+    for (const p of parts) {
+      const made = makeHandle(p);
+      if (!made) { handles.forEach((x) => x.free()); return false; }
+      handles.push({ format: p.format, ...made });
+    }
+    if (!EmptyClipboard()) { handles.forEach((x) => x.free()); return false; }
+    let ok = true;
+    for (const x of handles) if (!SetClipboardData(x.format, x.h)) { x.free(); if (x.format === CF_UNICODETEXT) ok = false; }
+    return ok;
+  }, owner);
+}
+
 const clipboardSequence = () => GetClipboardSequenceNumber();
 // BrowserWindow.getNativeWindowHandle() returns the HWND bytes.
 const hwndOf = (buf) => (buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0)));
 
-module.exports = { foregroundWindow, isKeyDown, sendKeys, snapshotClipboard, restoreClipboard, clipboardSequence, hwndOf };
+module.exports = { foregroundWindow, isKeyDown, sendKeys, snapshotClipboard, restoreClipboard, setClipboardText, clipboardSequence, hwndOf };

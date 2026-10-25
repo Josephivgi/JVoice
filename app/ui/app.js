@@ -26,13 +26,13 @@ const ICONS = {
   copy: '<rect x="7" y="7" width="9" height="9" rx="1.5"/><path d="M4 12.5V5.5A1.5 1.5 0 0 1 5.5 4h7"/>',
   trash: '<path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 9.5a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L14 6"/>',
   retry: '<path d="M15.5 10a5.5 5.5 0 1 1-1.6-3.9M15.5 4v3.5H12"/>',
-  eye: '<path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z"/><circle cx="10" cy="10" r="2"/>',
   edit: '<path d="M12.5 4.5l3 3L8 15H5v-3z"/>',
 };
 
 let toastTimer;
 function toast(msg, err = false) {
   const t = $('toast');
+  t.setAttribute('role', err ? 'alert' : 'status');
   t.textContent = msg;
   t.classList.toggle('err', err);
   t.classList.add('show');
@@ -59,7 +59,28 @@ function when(ts) {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 const secs = (ms) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-const STYLE_NAMES = { clean: 'Light cleanup', rewrite: 'Rewrite', intent: 'Rewrite', custom: 'Rewrite', raw: 'Raw' };
+const STYLE_NAMES = { clean: 'Light cleanup', rewrite: 'Rewrite', intent: 'Rewrite', custom: 'Rewrite', raw: 'No AI' };
+// Older rows kept the style name even when the AI failed; no model means no AI ran.
+const styleName = (row) => (row.style !== 'raw' && !row.ai_model ? 'No AI' : STYLE_NAMES[row.style] || row.style);
+const shortModel = (id) => String(id || '').split('/').pop();
+
+// Word level diff of what was heard (a) against what was pasted (b), for "Show changes".
+function wordDiff(a, b) {
+  const A = a.match(/\S+\s*/g) || [], B = b.match(/\S+\s*/g) || [];
+  if (A.length * B.length > 4e5) return [b];
+  const t = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, ''); // "to," and "To" count as the same word
+  const L = Array.from({ length: A.length + 1 }, () => new Uint16Array(B.length + 1));
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = t(A[i]) === t(B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < A.length || j < B.length) {
+    if (i < A.length && j < B.length && t(A[i]) === t(B[j])) { out.push(B[j]); i++; j++; }
+    else if (j < B.length && (i === A.length || L[i][j + 1] >= L[i + 1][j])) out.push(el('ins', {}, B[j++]));
+    else out.push(el('del', {}, A[i++]));
+  }
+  return out;
+}
+const changedWords = (a, b) => wordDiff(a, b).filter((n) => typeof n !== 'string').length;
 
 function confirmBox(title, text, yes) {
   return new Promise((resolve) => {
@@ -144,16 +165,38 @@ function renderHero() {
 async function loadHome() {
   renderHero();
   try {
-    const [st, items] = await Promise.all([api.invoke('stats'), api.invoke('history:list')]);
+    const [st, items] = await Promise.all([api.invoke('stats'), api.invoke('history:list', '', 3)]);
     $('stToday').textContent = st.todayWords.toLocaleString();
     $('stWords').textContent = st.words.toLocaleString();
     $('stWpm').textContent = `${st.wpm} wpm`;
     $('stats').hidden = st.total === 0;
     $('stCost').textContent = `$${st.cost < 10 ? st.cost.toFixed(st.cost < 0.01 && st.cost > 0 ? 4 : 2) : st.cost.toFixed(2)}`;
-    renderHistory($('recent'), items.slice(0, 3), 'Nothing yet. Your dictations show up here.');
+    renderHistory($('recent'), items, 'Nothing yet. Your dictations show up here.');
+    renderTryResult(items[0]);
   } catch (err) { toast(err.message, true); }
 }
-$('tryClear').addEventListener('click', () => { $('tryBox').value = ''; $('tryBox').focus(); });
+
+// After a dictation into the Try box, say what the AI did with it.
+let tryShown = 0;
+function renderTryResult(row) {
+  const box = $('tryResult');
+  const fresh = row && row.status === 'done' && Date.now() - row.created_at < 15000 && document.activeElement === $('tryBox') && row.id !== tryShown;
+  if (!fresh) return;
+  tryShown = row.id;
+  const name = styleName(row);
+  if (name === 'No AI') box.replaceChildren(row.error ? 'AI cleanup failed, so you got the text as heard.' : 'AI cleanup is off, so you got the text as heard.');
+  else if (row.raw === row.final) box.replaceChildren(`${name} found nothing to fix.`);
+  else {
+    const n = changedWords(row.raw, row.final);
+    const diff = el('p', { class: 'diff', hidden: true }, wordDiff(row.raw, row.final));
+    const btn = el('button', { class: 'link', type: 'button', 'aria-expanded': 'false', onclick: () => {
+      diff.hidden = !diff.hidden; btn.setAttribute('aria-expanded', String(!diff.hidden)); btn.textContent = diff.hidden ? 'Show changes' : 'Hide changes';
+    } }, 'Show changes');
+    box.replaceChildren(`${name} made ${n} ${n === 1 ? 'change' : 'changes'}. `, btn, diff);
+  }
+  box.hidden = false;
+}
+$('tryClear').addEventListener('click', () => { $('tryBox').value = ''; $('tryResult').hidden = true; $('tryBox').focus(); });
 
 $('setupForm').addEventListener('submit', (e) => { e.preventDefault(); saveKey($('setupKey'), $('setupMsg'), $('setupSave')); });
 
@@ -179,7 +222,7 @@ async function saveKey(input, msg, btn) {
 // ---------- history ----------
 function historyItem(row) {
   const failed = row.status === 'failed';
-  const raw = el('div', { class: 'item-raw', hidden: true }, row.raw || '');
+  const text = failed ? null : el('div', { class: 'item-text' }, row.final);
   const actions = el('div', { class: 'item-actions' });
   if (failed) {
     actions.append(el('button', { class: 'btn sm', type: 'button', onclick: async (e) => {
@@ -193,9 +236,14 @@ function historyItem(row) {
       await api.invoke('clipboard:write', row.final); toast('Copied');
     } }, svg(ICONS.copy)));
     if (row.raw && row.raw !== row.final) {
-      actions.append(el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Show what was heard', 'aria-label': 'Show what was heard', 'aria-pressed': 'false', onclick: (e) => {
-        raw.hidden = !raw.hidden; e.currentTarget.setAttribute('aria-pressed', String(!raw.hidden));
-      } }, svg(ICONS.eye)));
+      let shown = false;
+      actions.prepend(el('button', { class: 'btn ghost sm', type: 'button', 'aria-pressed': 'false', onclick: (e) => {
+        shown = !shown;
+        text.replaceChildren(...(shown ? wordDiff(row.raw, row.final) : [row.final]));
+        text.classList.toggle('diff', shown);
+        e.currentTarget.setAttribute('aria-pressed', String(shown));
+        e.currentTarget.textContent = shown ? 'Hide changes' : 'Show changes';
+      } }, 'Show changes'));
     }
   }
   actions.append(el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Delete', 'aria-label': 'Delete entry', onclick: async () => {
@@ -205,13 +253,14 @@ function historyItem(row) {
   const meta = el('div', { class: 'item-meta' },
     el('span', {}, when(row.created_at)),
     el('span', {}, '·'), el('span', {}, secs(row.duration_ms)),
-    failed ? el('span', { class: 'tag failed' }, 'Failed') : el('span', { class: 'tag' }, STYLE_NAMES[row.style] || row.style),
+    failed ? el('span', { class: 'tag failed' }, 'Failed') : el('span', { class: 'tag' }, styleName(row)),
+    !failed && row.ai_model && row.raw === row.final ? el('span', { class: 'tag' }, 'No changes needed') : null,
+    !failed && row.ai_model ? el('span', {}, shortModel(row.ai_model)) : null,
     !failed ? el('span', {}, `${row.words} words`) : null,
     actions);
   return el('li', { class: `item${failed ? ' failed' : ''}` }, meta,
-    failed ? el('div', { class: 'item-err' }, row.error) : el('div', { class: 'item-text' }, row.final),
-    !failed && row.error ? el('div', { class: 'item-warn' }, row.error) : null,
-    raw.textContent ? raw : null);
+    failed ? el('div', { class: 'item-err' }, row.error) : text,
+    !failed && row.error ? el('div', { class: 'item-warn' }, row.error) : null);
 }
 
 function renderHistory(list, rows, emptyText) {
@@ -238,7 +287,10 @@ function refreshLists() {
   if (!$('page-history').hidden) loadHistory();
   if (!$('page-home').hidden) loadHome();
 }
-api.on('history:changed', refreshLists);
+// While the window is hidden there is nothing to redraw; catch up when it is shown again.
+let listsStale = false;
+api.on('history:changed', () => { if (document.hidden) listsStale = true; else refreshLists(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && listsStale) { listsStale = false; refreshLists(); } });
 
 // ---------- dictionary ----------
 let editingId = null;
@@ -323,7 +375,10 @@ const LANGS = [['', 'Auto detect'], ['en', 'English'], ['es', 'Spanish'], ['fr',
 $('language').append(...LANGS.map(([v, n]) => el('option', { value: v }, n)));
 
 function setRadio(selector, attr, value) {
-  document.querySelectorAll(selector).forEach((b) => b.setAttribute('aria-checked', String(b.dataset[attr] === value)));
+  document.querySelectorAll(selector).forEach((b) => {
+    b.setAttribute('aria-checked', String(b.dataset[attr] === value));
+    b.tabIndex = b.dataset[attr] === value ? 0 : -1; // one Tab stop per group; arrows move inside it
+  });
 }
 function radioKeys(group) {
   // Arrow keys move between options in a radio group.
@@ -354,8 +409,7 @@ function renderSettings() {
   $('aiBody').toggleAttribute('inert', !settings.aiEnabled);
   setRadio('[data-style]', 'style', settings.aiStyle);
   if (document.activeElement !== $('aiCustom')) $('aiCustom').value = settings.aiCustomPrompt;
-  if (document.activeElement !== $('aiModel')) $('aiModel').value = settings.aiModel;
-  renderPrice();
+  renderModelPick();
   setRadio('[data-output]', 'output', settings.outputMode);
   $('restoreClipboard').checked = settings.restoreClipboard;
   $('restoreClipboard').disabled = settings.outputMode !== 'paste';
@@ -377,10 +431,43 @@ $('sttModel').addEventListener('change', (e) => save({ sttModel: e.target.value 
 $('language').addEventListener('change', (e) => save({ language: e.target.value }));
 $('maxRecord').addEventListener('change', (e) => save({ maxRecordSeconds: Number(e.target.value) }));
 $('charLimit').addEventListener('change', (e) => save({ charLimit: Number(e.target.value) }));
-$('aiCustom').addEventListener('change', (e) => save({ aiCustomPrompt: e.target.value }));
+// Saved while typing too, so closing the window right after does not lose it.
+let customTimer;
+$('aiCustom').addEventListener('input', (e) => { clearTimeout(customTimer); customTimer = setTimeout(() => save({ aiCustomPrompt: e.target.value }, true), 600); });
+$('aiCustom').addEventListener('change', (e) => { clearTimeout(customTimer); save({ aiCustomPrompt: e.target.value }); });
+// A short list of fast, cheap models that clean up dictation well, plus "Other" to search all of them.
+const RECOMMENDED = [
+  ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (default)'],
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5'],
+  ['google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
+  ['openai/gpt-5.4-mini', 'GPT-5.4 Mini'],
+  ['qwen/qwen3.8-flash', 'Qwen3.8 Flash'],
+];
+const OTHER = '__other';
+let pickOther = false;
+function renderModelPick() {
+  const sel = $('aiModelPreset');
+  const avail = RECOMMENDED.filter(([id]) => !models.length || models.some((m) => m.id === id));
+  sel.replaceChildren(...avail.map(([id, name]) => el('option', { value: id }, name)), el('option', { value: OTHER }, 'Other model…'));
+  if (!avail.some(([id]) => id === settings.aiModel)) pickOther = true;
+  sel.value = pickOther ? OTHER : settings.aiModel;
+  $('aiModelOther').hidden = !pickOther;
+  if (document.activeElement !== $('aiModel')) $('aiModel').value = settings.aiModel;
+  renderPrice();
+}
+$('aiModelPreset').addEventListener('change', (e) => {
+  if (e.target.value === OTHER) {
+    pickOther = true; renderModelPick(); loadModels();
+    $('aiModel').value = ''; $('aiModel').focus();
+    return;
+  }
+  pickOther = false;
+  save({ aiModel: e.target.value });
+});
 $('aiModel').addEventListener('change', (e) => {
   const v = e.target.value.trim();
-  if (models.length && !models.some((m) => m.id === v)) { toast(`${v || 'That'} is not an OpenRouter model id.`, true); e.target.value = settings.aiModel; return; }
+  if (!v) { e.target.value = settings.aiModel; return; }
+  if (models.length && !models.some((m) => m.id === v)) { toast(`${v} is not an OpenRouter model id.`, true); return; }
   save({ aiModel: v });
 });
 $('aiModel').addEventListener('input', renderPrice);
@@ -390,8 +477,9 @@ let modelsError = '';
 function renderPrice() {
   $('aiModelRetry').hidden = modelsState !== 'error';
   if (modelsState === 'error') { $('aiPrice').textContent = `Could not load the model list: ${modelsError}`; return; }
-  const m = models.find((x) => x.id === $('aiModel').value.trim());
-  if (!m) { $('aiPrice').textContent = modelsState === 'loading' ? 'Loading models…' : 'Pick any OpenRouter chat model.'; return; }
+  const typed = !$('aiModelOther').hidden && $('aiModel').value.trim();
+  const m = models.find((x) => x.id === (typed || settings.aiModel));
+  if (!m) { $('aiPrice').textContent = modelsState === 'loading' ? 'Loading models…' : 'Type to search every OpenRouter chat model.'; return; }
   const per = (p) => (p * 1e6 < 1 ? `$${(p * 1e6).toFixed(2)}` : `$${(p * 1e6).toFixed(1)}`);
   $('aiPrice').textContent = `${m.name}. ${per(m.prompt)} in, ${per(m.completion)} out per million tokens.`;
 }
@@ -401,7 +489,9 @@ async function loadModels(force = false) {
   try {
     models = await api.invoke('models:list', force);
     $('aiModels').replaceChildren(...models.map((m) => el('option', { value: m.id }, m.name)));
+    $('aiModel').placeholder = `Search ${models.length} models`;
     modelsState = 'ready';
+    if (settings) renderModelPick();
   } catch (err) { modelsState = 'error'; modelsError = err.message; }
   renderPrice();
 }
@@ -492,7 +582,9 @@ async function startMicTest() {
       if (micTest !== test) return;
       an.getFloatTimeDomainData(data);
       let s = 0; for (const v of data) s += v * v;
-      $('micMeter').style.width = `${Math.min(100, Math.sqrt(s / data.length) * 900)}%`;
+      const level = Math.min(100, Math.sqrt(s / data.length) * 900);
+      $('micMeter').style.width = `${level}%`;
+      if (performance.now() - (test.said || 0) > 250) { test.said = performance.now(); $('micMeterWrap').setAttribute('aria-valuenow', String(Math.round(level))); }
       test.raf = requestAnimationFrame(tick);
     };
     tick();
@@ -511,6 +603,7 @@ function stopMicTest() {
   micTest.ctx.close();
   micTest = null;
   $('micMeter').style.width = '0';
+  $('micMeterWrap').setAttribute('aria-valuenow', '0');
   $('micTest').textContent = 'Start test';
 }
 $('micTest').addEventListener('click', () => (micTest ? stopMicTest() : startMicTest()));

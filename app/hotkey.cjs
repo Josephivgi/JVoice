@@ -9,6 +9,8 @@ const MODIFIERS = new Set([K.Ctrl, K.Shift, K.Alt, K.Meta]);
 const MOD_ORDER = [K.Ctrl, K.Meta, K.Alt, K.Shift];
 // Windows virtual key codes for each physical modifier, used to check the real key state.
 const VK = { [K.Ctrl]: 0xA2, [K.CtrlRight]: 0xA3, [K.Shift]: 0xA0, [K.ShiftRight]: 0xA1, [K.Alt]: 0xA4, [K.AltRight]: 0xA5, [K.Meta]: 0x5B, [K.MetaRight]: 0x5C };
+// Hook event flag for each modifier, used to drop key-down entries whose key-up was missed.
+const FLAG = { [K.Ctrl]: 'ctrlKey', [K.Shift]: 'shiftKey', [K.Alt]: 'altKey', [K.Meta]: 'metaKey' };
 
 const NAMES = {};
 for (const [name, code] of Object.entries(K)) if (!(code in NAMES)) NAMES[code] = name;
@@ -97,6 +99,7 @@ class Hotkey extends EventEmitter {
 
   // Skip events we injected ourselves, matched one by one, so real keys are never swallowed.
   consumeInjected(type, code) {
+    if (!this.injected.length) return false; // the usual case: runs for every key the user types
     const now = Date.now();
     this.injected = this.injected.filter((e) => e.until > now);
     const i = this.injected.findIndex((e) => e.type === type && norm(e.code) === norm(code));
@@ -111,10 +114,9 @@ class Hotkey extends EventEmitter {
   // flag after the lock screen does no harm (the lock-screen handler also resets everything). Without
   // flags, old modifier entries are checked against the live key state.
   reconcile(now, except, ev) {
-    const flag = { [K.Ctrl]: 'ctrlKey', [K.Shift]: 'shiftKey', [K.Alt]: 'altKey', [K.Meta]: 'metaKey' };
     for (const [c, t] of this.raw) {
       if (c === except) continue;
-      const f = flag[norm(c)];
+      const f = FLAG[norm(c)];
       if (f && ev && typeof ev[f] === 'boolean') {
         if (!ev[f]) this.raw.delete(c); // the event says it was up: our key-down entry is stale
       } else if (VK[c] && this.isKeyDown) {
@@ -130,10 +132,10 @@ class Hotkey extends EventEmitter {
     this.reconcile(now, code, ev);
     const repeat = this.raw.has(code);
     this.raw.set(code, now);
+    if (repeat) return; // auto-repeat while a key is held
     const n = norm(code);
     const held = this.held();
-    if (this.capture) { if (!repeat) this.capture('down', n, [...held]); return; }
-    if (repeat) return;
+    if (this.capture) { this.capture('down', n, [...held]); return; }
     if (n === K.Escape && this.recording) { this.emit('cancel'); return; }
     if (this.paused) return;
 

@@ -3,6 +3,10 @@
 const BASE = 'https://openrouter.ai/api/v1';
 const APP_HEADERS = { 'HTTP-Referer': 'https://github.com/Josephivgi/JVoice', 'X-Title': 'JVoice' };
 
+// Main swaps in Electron's net.fetch, which keeps connections warm between dictations. Tests use Node's fetch.
+let fetchImpl = (...a) => fetch(...a);
+const setFetch = (fn) => { fetchImpl = fn; };
+
 class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
@@ -29,7 +33,7 @@ async function request(path, { key, method = 'GET', body, timeoutMs = 60000, sig
   const timeout = AbortSignal.timeout(timeoutMs);
   let res;
   try {
-    res = await fetch(BASE + path, {
+    res = await fetchImpl(BASE + path, {
       method, headers, body: body ? JSON.stringify(body) : undefined,
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
@@ -47,7 +51,8 @@ async function request(path, { key, method = 'GET', body, timeoutMs = 60000, sig
 }
 
 async function transcribe({ key, model, wav, language, signal }) {
-  const body = { model, input_audio: { data: Buffer.from(wav).toString('base64'), format: 'wav' } };
+  const data = (Buffer.isBuffer(wav) ? wav : Buffer.from(wav)).toString('base64');
+  const body = { model, input_audio: { data, format: 'wav' } };
   if (language) body.language = language;
   const json = await request('/audio/transcriptions', { key, method: 'POST', body, timeoutMs: 120000, signal });
   return { text: String(json?.text ?? '').trim(), cost: Number(json?.usage?.cost) || 0 };
@@ -91,18 +96,35 @@ function buildSystemPrompt({ style, customPrompt, terms, charLimit = 0 }) {
   return lines.join('\n');
 }
 
+// A stalled cleanup holds the paste, so the wait grows with the text instead of a flat minute.
+const improveTimeout = (text) => Math.min(60000, 10000 + String(text).length * 8);
+
+// Models that refused reasoning off (some only run with reasoning). Kept for this session.
+const mustReason = new Set();
+
 async function improve({ key, model, text, style, customPrompt = '', terms = [], charLimit = 0, signal }) {
-  const json = await request('/chat/completions', {
-    key, method: 'POST', timeoutMs: 60000, signal,
-    body: {
-      model,
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: buildSystemPrompt({ style, customPrompt, terms, charLimit }) },
-        { role: 'user', content: `<dictation>\n${text}\n</dictation>` },
-      ],
-    },
+  const body = {
+    model,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: buildSystemPrompt({ style, customPrompt, terms, charLimit }) },
+      { role: 'user', content: `<dictation>\n${text}\n</dictation>` },
+    ],
+  };
+  const send = (reasonOff) => request('/chat/completions', {
+    key, method: 'POST', timeoutMs: improveTimeout(text), signal,
+    // Cleanup needs no thinking, and reasoning only adds seconds before the paste. The token cap
+    // leaves room for reasoning on models that insist on it.
+    body: reasonOff
+      ? { ...body, reasoning: { effort: 'none' }, max_tokens: Math.ceil(String(text).length / 2) + 512 }
+      : { ...body, reasoning: { effort: 'low' }, max_tokens: Math.ceil(String(text).length / 2) + 4096 },
   });
+  let json;
+  try { json = await send(!mustReason.has(model)); } catch (err) {
+    if (err.status !== 400 || !/reason/i.test(err.message) || mustReason.has(model)) throw err;
+    mustReason.add(model);
+    json = await send(false);
+  }
   let out = json?.choices?.[0]?.message?.content;
   if (Array.isArray(out)) out = out.map((p) => p?.text ?? '').join('');
   out = String(out ?? '').trim()
@@ -164,9 +186,23 @@ function capLength(text, limit) {
   return cut.trim();
 }
 
+// Pasted text can come from a model, so control characters (other than tab and new line) and
+// bidi overrides that could hide what the text really says are removed.
+function sanitizeOutput(text) {
+  return String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F‪-‮⁦-⁩]/g, '');
+}
+
+// Consoles run each pasted line as a command, so text for a terminal goes in as one line.
+const TERMINALS = new Set(['cmd.exe', 'powershell.exe', 'pwsh.exe', 'windowsterminal.exe', 'wt.exe', 'conhost.exe',
+  'openconsole.exe', 'wsl.exe', 'bash.exe', 'mintty.exe', 'alacritty.exe', 'wezterm-gui.exe', 'putty.exe', 'kitty.exe']);
+const isTerminal = (exe) => TERMINALS.has(String(exe || '').toLowerCase());
+const oneLine = (text) => String(text).replace(/\s*\n+\s*/g, ' ').trim();
+
 function countWords(text) {
   const m = String(text).trim().match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu);
   return m ? m.length : 0;
 }
 
-module.exports = { capLength, normalizeStyle, transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };
+module.exports = { setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

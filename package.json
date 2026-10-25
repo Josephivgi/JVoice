@@ -32,7 +32,8 @@
     "files": [
       "app/**",
       "assets/**",
-      "package.json"
+      "package.json",
+      "LICENSE"
     ],
     "asarUnpack": [
       "node_modules/uiohook-napi/**",
@@ -58,7 +59,15 @@
         "repo": "JVoice",
         "releaseType": "release"
       }
-    ]
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }
   },
   "repository": {
     "type": "git",

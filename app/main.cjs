@@ -1,9 +1,10 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, clipboard, nativeImage, screen,
-  safeStorage, shell, Notification, powerMonitor, session,
+  safeStorage, shell, Notification, powerMonitor, session, net,
 } = require('electron');
 const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
@@ -13,16 +14,22 @@ const { Updater } = require('./updater.cjs');
 let win32 = null;
 try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpers unavailable', err.message); }
 
+// Test modes read files, use the saved key or record the mic with no UI, so the installed app ignores
+// them. Only --smoke (a self check that prints yes/no results) works in every build.
+const DEV = !app.isPackaged;
+const devArg = (name) => (DEV ? process.argv.indexOf(name) : -1);
 const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
-const TRANSCRIBE_ARG = process.argv.indexOf('--transcribe');
-const SHOTS_ARG = process.argv.indexOf('--shots');
-const RECORD_ARG = process.argv.indexOf('--record-test');
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || process.argv.includes('--import-key');
+const TRANSCRIBE_ARG = devArg('--transcribe');
+const SHOTS_ARG = devArg('--shots');
+const RECORD_ARG = devArg('--record-test');
+const IMPORT_KEY = devArg('--import-key') > 0;
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || IMPORT_KEY;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
+const UI_URL = pathToFileURL(UI).href + '/';
 
-if (process.env.JVOICE_USER_DATA) app.setPath('userData', process.env.JVOICE_USER_DATA);
+if (DEV && process.env.JVOICE_USER_DATA) app.setPath('userData', process.env.JVOICE_USER_DATA);
 if (RECORD_ARG > 0) {
   // Feeds a WAV file to getUserMedia as a fake microphone, so the real recorder code runs without a mic.
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
@@ -37,14 +44,19 @@ const hotkey = new Hotkey({ send: win32 ? win32.sendKeys : null });
 let modelsCache = null;
 
 // ---------- API key (encrypted with Windows DPAPI through safeStorage) ----------
+// Decrypted once and kept in memory, since each dictation needs it several times.
+let keyCache = null;
 function getKey() {
+  if (keyCache !== null) return keyCache;
   const enc = store.getSettings().apiKeyEnc;
-  if (!enc) return '';
-  try { return safeStorage.decryptString(Buffer.from(enc, 'base64')); } catch { return ''; }
+  if (!enc) return (keyCache = '');
+  try { keyCache = safeStorage.decryptString(Buffer.from(enc, 'base64')); } catch { keyCache = ''; }
+  return keyCache;
 }
 function setKey(key) {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows could not encrypt the key on this account.');
   store.setSettings({ apiKeyEnc: key ? safeStorage.encryptString(key).toString('base64') : '' });
+  keyCache = key || '';
 }
 const maskKey = (k) => (k ? `${k.slice(0, 8)}…${k.slice(-4)}` : '');
 
@@ -61,20 +73,28 @@ function send(win, channel, payload) {
 }
 const toMain = (channel, payload) => send(mainWin, channel, payload);
 
+const webPrefs = (extra = {}) => ({ preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, devTools: DEV, ...extra });
+const SAFE_LINK = /^https:\/\/(openrouter\.ai|github\.com)\//;
+// Our pages never navigate or open windows; links to the two sites JVoice uses open in the browser.
+function lockDown(wc) {
+  wc.setWindowOpenHandler(({ url }) => {
+    if (SAFE_LINK.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  wc.on('will-navigate', (e) => e.preventDefault());
+  wc.on('will-redirect', (e) => e.preventDefault());
+}
+
 function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 980, height: 680, minWidth: 640, minHeight: 520,
     show: false, title: 'JVoice', icon: ICON, backgroundColor: '#15171c',
     autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
+    webPreferences: webPrefs(),
   });
   mainWin.removeMenu();
   mainWin.loadFile(path.join(UI, 'index.html'));
-  mainWin.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//.test(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
-  mainWin.webContents.on('will-navigate', (e) => e.preventDefault());
+  lockDown(mainWin.webContents);
   mainWin.on('close', (e) => {
     if (app.isQuitting) return;
     e.preventDefault();
@@ -105,8 +125,9 @@ function createOverlay() {
     width: OVERLAY_W, height: OVERLAY_H, show: false, frame: false, transparent: true,
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
     skipTaskbar: true, focusable: false, alwaysOnTop: true, hasShadow: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
+    webPreferences: webPrefs({ backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' }),
   });
+  lockDown(overlayWin.webContents);
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   overlayWin.setIgnoreMouseEvents(true);
   const w = overlayWin;
@@ -218,6 +239,18 @@ const dictation = {
     this.startedAt = Date.now();
     showOverlay();
     toOverlay('rec:start', { id, deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds });
+    // While the user talks: open the connection to OpenRouter and copy the clipboard, so neither
+    // delays the paste later.
+    session.defaultSession.preconnect({ url: 'https://openrouter.ai', numSockets: 1 });
+    this.clip = null;
+    if (win32 && s.outputMode === 'paste' && s.restoreClipboard) {
+      setImmediate(async () => {
+        const seq = win32.clipboardSequence();
+        let snap = null;
+        try { snap = await win32.snapshotClipboard(); } catch { /* clipboard busy: taken again at paste time */ }
+        if (id === this.session) this.clip = { seq, snap };
+      });
+    }
   },
 
   interrupt() {
@@ -290,14 +323,19 @@ const dictation = {
         reportIssue('JVoice heard only silence from your microphone. Check the input device in Settings.', 'mic');
         return fail('No sound from the microphone. Check Settings.', 3000);
       }
-      const result = await runPipeline({ wav: Buffer.from(rec.wav), ms: rec.ms, signal: ac.signal, onStage: (st) => { if (current()) overlayState(st); } });
+      // The IPC copy is already a fresh buffer, so wrap it instead of copying again.
+      const wav = Buffer.from(rec.wav.buffer, rec.wav.byteOffset, rec.wav.byteLength);
+      const result = await runPipeline({ wav, ms: rec.ms, signal: ac.signal, onStage: (st, data) => { if (current()) overlayState(st, data); } });
       if (ac.signal.aborted || !current()) return;
       if (!result.final) return fail('No speech detected.', 1800);
-      const out = await output(result.final, { signal: ac.signal, target: this.target });
+      const out = await output(result.final, { signal: ac.signal, target: this.target, clip: this.clip });
+      this.clip = null;
+      // Refresh the History list only after the paste, so its queries never compete with it.
+      toMain('history:changed');
       if (ac.signal.aborted || !current()) return;
       if (lastIssue && lastIssue.action !== 'history') reportIssue(null);
-      const note = out.note || (result.aiError ? 'AI cleanup failed, so the raw text was used.' : '');
-      overlayState('done', { words: result.words, pasted: out.pasted, note }, note ? 3000 : 1300);
+      const note = out.note || (result.aiError ? 'AI cleanup failed, so the raw text was used.' : result.cut ? `Cut to ${result.cut} characters.` : '');
+      overlayState('done', { words: result.words, pasted: out.pasted, note, style: result.style, changed: result.changed }, note ? 3000 : 1500);
     } catch (err) {
       if (ac.signal.aborted || !current()) return;
       fail(err.message, 3600);
@@ -328,9 +366,8 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
       let row = historyId ? store.getHistoryItem(historyId) : null;
       if (!row) {
         row = store.addHistory({ ...base, status: 'failed', error: err.message });
-        const file = path.join(failedDir, `${row.id}.wav`);
-        fs.writeFileSync(file, wav);
-        store.updateHistory(row.id, { audio_path: file });
+        fs.writeFileSync(path.join(failedDir, `${row.id}.wav`), wav);
+        store.updateHistory(row.id, { audio_path: `${row.id}.wav` });
       } else store.updateHistory(row.id, { error: err.message });
       toMain('history:changed');
       err.saved = true; // the recording is in History with Retry
@@ -341,7 +378,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   let final = raw;
   let aiError = '';
   if (raw && s.aiEnabled) {
-    onStage('improving');
+    onStage('improving', { style: s.aiStyle });
     try {
       const r = await api.improve({ key, model: s.aiModel, text: raw, style: s.aiStyle, customPrompt: s.aiCustomPrompt, terms, charLimit: s.charLimit, signal });
       cost += r.cost;
@@ -352,24 +389,43 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
     }
   }
 
-  final = api.capLength(final, s.charLimit);
+  final = api.sanitizeOutput(final);
+  const capped = api.capLength(final, s.charLimit);
+  const cut = capped !== final ? s.charLimit : 0;
+  final = capped;
   const words = api.countWords(final);
+  const style = s.aiEnabled && !aiError ? s.aiStyle : 'raw';
   if (s.keepHistory && final) {
-    const fields = { status: 'done', raw, final, error: aiError ? `AI cleanup failed: ${aiError}` : '', ai_model: s.aiEnabled && !aiError ? s.aiModel : '', words, cost };
+    const fields = { status: 'done', raw, final, style, error: aiError ? `AI cleanup failed: ${aiError}` : '', ai_model: style !== 'raw' ? s.aiModel : '', words, cost };
     if (historyId) {
       const old = store.getHistoryItem(historyId);
-      if (old?.audio_path) fs.rm(old.audio_path, { force: true }, () => {});
+      if (old?.audio_path) removeAudio(old.audio_path);
       store.updateHistory(historyId, { ...fields, audio_path: '' });
     } else store.addHistory({ ...base, ...fields });
-    toMain('history:changed');
   }
-  return { raw, final, words, cost, aiError };
+  return { raw, final, words, cost, aiError, cut, style, changed: final !== raw };
+}
+
+// History rows store only the WAV file name. Anything else is resolved inside failedDir, so a bad
+// row can never point JVoice at another file.
+function audioFile(name) {
+  const base = path.basename(String(name || ''));
+  return /^\d+\.wav$/.test(base) ? path.join(failedDir, base) : null;
+}
+function removeAudio(name) {
+  const f = audioFile(name);
+  if (f) fs.rm(f, { force: true }, () => {});
 }
 
 // Puts the text into the app the user was in. Falls back to copy-only whenever pasting could go wrong.
-async function output(text, { signal, target } = {}) {
+async function output(text, { signal, target, clip } = {}) {
   const s = store.getSettings();
   if (s.outputMode !== 'paste') { clipboard.writeText(text); return { pasted: false }; }
+  let note = '';
+  if (target && api.isTerminal(target.exe) && /\n/.test(text)) {
+    text = api.oneLine(text);
+    note = 'Pasted as one line, since this is a terminal.';
+  }
   const released = await hotkey.waitForModifiersReleased(1500, signal);
   if (signal?.aborted) return { pasted: false };
   if (!released) { clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
@@ -382,13 +438,18 @@ async function output(text, { signal, target } = {}) {
   if (!sameWindow()) { clipboard.writeText(text); return switched; }
   let snap = null;
   if (s.restoreClipboard && win32) {
-    try { snap = await win32.snapshotClipboard(); } catch { snap = null; }
+    // Reuse the copy taken when recording started, unless something was copied since.
+    if (clip && clip.seq === win32.clipboardSequence()) snap = clip.snap;
+    else { try { snap = await win32.snapshotClipboard(); } catch { snap = null; } }
   }
   // The snapshot can wait on another app's clipboard lock, so check everything again right before pasting.
   if (signal?.aborted) return { pasted: false };
-  clipboard.writeText(text);
-  if (!sameWindow()) return switched;
-  if (hotkey.modifiersDown()) return { pasted: false, note: 'Keys were still held, so the text was copied instead.' };
+  // Text that is only on the clipboard for the paste stays out of Windows clipboard history.
+  let written = false;
+  if (win32 && snap) { try { written = await win32.setClipboardText(text, clipboardOwner()); } catch { written = false; } }
+  if (!written) clipboard.writeText(text);
+  if (!sameWindow()) { if (written) clipboard.writeText(text); return switched; }
+  if (hotkey.modifiersDown()) { if (written) clipboard.writeText(text); return { pasted: false, note: 'Keys were still held, so the text was copied instead.' }; }
   const seq = win32 ? win32.clipboardSequence() : 0;
   hotkey.paste();
   if (snap) {
@@ -397,7 +458,7 @@ async function output(text, { signal, target } = {}) {
       try { await win32.restoreClipboard(snap, clipboardOwner(), seq); } catch (err) { console.error('clipboard restore failed', err.message); }
     }, 700);
   }
-  return { pasted: true };
+  return { pasted: true, note };
 }
 
 function clipboardOwner() {
@@ -418,9 +479,15 @@ function applyLoginItem(on) {
 }
 
 function registerIpc() {
-  const handle = (ch, fn) => ipcMain.handle(ch, async (_e, ...args) => {
+  // Only JVoice's own pages may call into main.
+  const fromApp = (e) => String(e.senderFrame?.url || '').startsWith(UI_URL);
+  const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
+    if (!fromApp(e)) return { ok: false, error: 'Blocked.' };
     try { return { ok: true, data: await fn(...args) }; } catch (err) { return { ok: false, error: err.message || String(err) }; }
   });
+  const fromOverlay = (e) => !!overlayWin && !overlayWin.isDestroyed() && e.sender === overlayWin.webContents;
+  const str = (v, max) => String(v ?? '').slice(0, max);
+  const MODEL_ID = /^[\w.:~/-]{1,120}$/;
 
   handle('settings:get', () => publicSettings());
   handle('settings:set', (patch) => {
@@ -436,9 +503,18 @@ function registerIpc() {
     if (clean.outputMode && !['paste', 'copy'].includes(clean.outputMode)) delete clean.outputMode;
     if ('charLimit' in clean && ![0, 128, 280, 500, 1024].includes(Number(clean.charLimit))) delete clean.charLimit;
     else if ('charLimit' in clean) clean.charLimit = Number(clean.charLimit);
-    if ('sttModel' in clean) clean.sttModel = String(clean.sttModel).trim() || 'elevenlabs/scribe-v2';
-    if ('aiModel' in clean) clean.aiModel = String(clean.aiModel).trim() || DEFAULTS.aiModel;
-    if ('language' in clean) clean.language = String(clean.language).trim().toLowerCase().slice(0, 8);
+    for (const k of ['sttModel', 'aiModel']) {
+      if (!(k in clean)) continue;
+      clean[k] = str(clean[k], 200).trim() || DEFAULTS[k];
+      if (!MODEL_ID.test(clean[k])) throw new Error('That is not a valid model id.');
+    }
+    if ('language' in clean) clean.language = str(clean.language, 8).trim().toLowerCase().replace(/[^a-z-]/g, '');
+    if ('aiCustomPrompt' in clean) clean.aiCustomPrompt = str(clean.aiCustomPrompt, 4000);
+    if ('micDeviceId' in clean) clean.micDeviceId = str(clean.micDeviceId, 256);
+    if ('maxRecordSeconds' in clean) clean.maxRecordSeconds = Math.min(600, Math.max(5, Math.round(Number(clean.maxRecordSeconds)) || 600));
+    for (const k of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'keepHistory', 'closeHintShown']) {
+      if (k in clean) clean[k] = !!clean[k];
+    }
     store.setSettings(clean);
     if ('launchAtLogin' in clean) applyLoginItem(!!clean.launchAtLogin);
     if (clean.hotkey || clean.hotkeyMode) applyHotkeySettings();
@@ -460,20 +536,21 @@ function registerIpc() {
     return modelsCache;
   });
 
-  handle('history:list', (query) => store.listHistory({ query: String(query ?? '').trim() }));
+  handle('history:list', (query, limit) => store.listHistory({ query: str(query, 200).trim(), limit: Math.min(200, Math.max(1, Number(limit) || 200)) }));
   handle('history:delete', (id) => {
     const row = store.deleteHistory(id);
-    if (row?.audio_path) fs.rm(row.audio_path, { force: true }, () => {});
+    if (row?.audio_path) removeAudio(row.audio_path);
     return true;
   });
   handle('history:clear', () => {
-    for (const f of store.clearHistory()) fs.rm(f, { force: true }, () => {});
+    for (const f of store.clearHistory()) removeAudio(f);
     return true;
   });
   handle('history:retry', async (id) => {
     const row = store.getHistoryItem(id);
-    if (!row?.audio_path || !fs.existsSync(row.audio_path)) throw new Error('The recording for this entry is gone.');
-    const wav = fs.readFileSync(row.audio_path);
+    const file = audioFile(row?.audio_path);
+    if (!file || !fs.existsSync(file)) throw new Error('The recording for this entry is gone.');
+    const wav = fs.readFileSync(file);
     const r = await runPipeline({ wav, ms: row.duration_ms, historyId: id });
     if (r.final) clipboard.writeText(r.final);
     return r;
@@ -515,15 +592,15 @@ function registerIpc() {
   handle('update:check', () => updater?.check());
   handle('update:restart', () => updater?.restartNow() ?? false);
   handle('open:external', (url) => {
-    if (!/^https:\/\/(openrouter\.ai|github\.com)\//.test(url)) throw new Error('Blocked link.');
+    if (!SAFE_LINK.test(url)) throw new Error('Blocked link.');
     return shell.openExternal(url);
   });
   handle('open:mic-settings', () => shell.openExternal('ms-settings:privacy-microphone'));
 
   // Overlay recorder events (fire and forget).
-  ipcMain.on('rec:done', (_e, rec) => dictation.onRecorded(rec));
-  ipcMain.on('rec:error', (_e, err) => dictation.onRecorderError({ id: err?.id, message: String(err?.message ?? 'The microphone failed.') }));
-  ipcMain.on('rec:limit', (_e, id) => { if (id === dictation.session) dictation.stop(); });
+  ipcMain.on('rec:done', (e, rec) => { if (fromOverlay(e)) dictation.onRecorded(rec); });
+  ipcMain.on('rec:error', (e, err) => { if (fromOverlay(e)) dictation.onRecorderError({ id: err?.id, message: str(err?.message ?? 'The microphone failed.', 300) }); });
+  ipcMain.on('rec:limit', (e, id) => { if (fromOverlay(e) && id === dictation.session) dictation.stop(); });
 }
 
 // ---------- test modes ----------
@@ -537,7 +614,11 @@ async function runSmoke() {
     const w = new BrowserWindow({ show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
     const errors = [];
     w.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message); });
-    await w.loadFile(path.join(UI, page));
+    try { await w.loadFile(path.join(UI, page)); } catch (err) {
+      report.pages[page] = { errors: [`load failed: ${err.message}`] };
+      w.destroy();
+      continue;
+    }
     await new Promise((r) => setTimeout(r, 1500));
     const ui = await w.webContents.executeJavaScript(`({
       page: [...document.querySelectorAll('.page')].find((p) => !p.hidden)?.id || null,
@@ -569,6 +650,10 @@ async function runShots(dir) {
       for (const page of ['home', 'history', 'dictionary', 'settings']) {
         win.webContents.send('nav', page);
         await shot(win, `${theme}-${w}-${page}`);
+        if (page === 'history') {
+          await win.webContents.executeJavaScript(`[...document.querySelectorAll('#histList button')].find((b) => b.textContent === 'Show changes')?.click()`);
+          await shot(win, `${theme}-${w}-${page}-changes`);
+        }
         if (page === 'settings') {
           for (const y of [700, 1400]) {
             await win.webContents.executeJavaScript(`document.getElementById('main').scrollTop = ${y}`);
@@ -636,13 +721,27 @@ app.whenReady().then(async () => {
   failedDir = path.join(app.getPath('userData'), 'failed-audio');
   fs.mkdirSync(failedDir, { recursive: true });
 
-  // Only our own pages ask for anything, and only the microphone.
-  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(perm === 'media'));
-  session.defaultSession.setPermissionCheckHandler((wc, perm) => perm === 'media');
+  // Only our own pages ask for anything, and only the microphone (no camera, no screen capture).
+  const ours = (url) => String(url || '').startsWith(UI_URL);
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb, details) => {
+    const types = details?.mediaTypes ?? [];
+    cb(perm === 'media' && ours(details?.requestingUrl || wc.getURL()) && types.length > 0 && types.every((t) => t === 'audio'));
+  });
+  session.defaultSession.setPermissionCheckHandler((wc, perm, origin, details) =>
+    perm === 'media' && (!details?.mediaType || details.mediaType === 'audio') && ours(wc?.getURL() || details?.requestingUrl));
+  api.setFetch((url, init) => net.fetch(url, init));
+  // Failed recordings are kept for Retry, but not forever.
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  fs.readdir(failedDir, (err, names) => {
+    for (const n of err ? [] : names) {
+      const f = path.join(failedDir, n);
+      fs.stat(f, (e, st) => { if (!e && st.mtimeMs < cutoff) fs.rm(f, { force: true }, () => {}); });
+    }
+  });
 
   if (SMOKE) return runSmoke();
   if (TRANSCRIBE_ARG > 0) return runTranscribeFile(process.argv[TRANSCRIBE_ARG + 1]);
-  if (process.argv.includes('--import-key')) {
+  if (IMPORT_KEY) {
     // Headless key import for setup scripts: reads JVOICE_IMPORT_KEY, checks it with OpenRouter, stores it encrypted.
     try {
       const key = String(process.env.JVOICE_IMPORT_KEY || '').trim();
@@ -666,9 +765,11 @@ app.whenReady().then(async () => {
   powerMonitor.on('resume', () => hotkey.reset());
 
   createOverlay();
-  createMainWindow();
+  // Started at login with a key saved: the main window is only made when the user opens it.
+  const openNow = !START_HIDDEN || !getKey();
+  if (openNow) createMainWindow();
 
-  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle' });
+  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle', fetch: (url) => net.fetch(url) });
   updater.on('state', (st) => {
     toMain('update', st);
     buildTrayMenu();
@@ -685,7 +786,7 @@ app.whenReady().then(async () => {
   buildTrayMenu();
 
   const s = store.getSettings();
-  if (!START_HIDDEN || !getKey()) mainWin.once('ready-to-show', () => showMain(getKey() ? null : 'home'));
+  if (openNow) mainWin.once('ready-to-show', () => showMain(getKey() ? null : 'home'));
   if (s.launchAtLogin) applyLoginItem(true);
 });
 

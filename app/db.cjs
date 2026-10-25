@@ -45,17 +45,30 @@ class Store {
         audio_path TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS history_created ON history(created_at DESC);
+      CREATE INDEX IF NOT EXISTS history_status_created ON history(status, created_at);
       CREATE TABLE IF NOT EXISTS dictionary (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         term TEXT NOT NULL UNIQUE COLLATE NOCASE,
         heard_as TEXT NOT NULL DEFAULT ''
       );
     `);
+    this.q = {
+      settings: this.db.prepare('SELECT key, value FROM settings'),
+      setSetting: this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
+      item: this.db.prepare('SELECT * FROM history WHERE id = ?'),
+    };
+    this.cache = null;
   }
 
+  // Settings are read several times per dictation, so they are parsed once and kept until the next write.
   getSettings() {
+    if (!this.cache) this.cache = this.readSettings();
+    return { ...this.cache, hotkey: [...this.cache.hotkey] };
+  }
+
+  readSettings() {
     const out = { ...DEFAULTS };
-    for (const row of this.db.prepare('SELECT key, value FROM settings').all()) {
+    for (const row of this.q.settings.all()) {
       if (row.key in DEFAULTS) {
         try { out[row.key] = JSON.parse(row.value); } catch { /* keep default */ }
       }
@@ -66,10 +79,10 @@ class Store {
   }
 
   setSettings(patch) {
-    const stmt = this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     for (const [k, v] of Object.entries(patch)) {
-      if (k in DEFAULTS) stmt.run(k, JSON.stringify(v));
+      if (k in DEFAULTS) this.q.setSetting.run(k, JSON.stringify(v));
     }
+    this.cache = null;
     return this.getSettings();
   }
 
@@ -84,7 +97,7 @@ class Store {
   }
 
   updateHistory(id, patch) {
-    const allowed = ['status', 'raw', 'final', 'error', 'ai_model', 'words', 'cost', 'audio_path'];
+    const allowed = ['status', 'raw', 'final', 'error', 'style', 'ai_model', 'words', 'cost', 'audio_path'];
     const keys = Object.keys(patch).filter((k) => allowed.includes(k));
     if (!keys.length) return this.getHistoryItem(id);
     this.db.prepare(`UPDATE history SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
@@ -93,7 +106,7 @@ class Store {
   }
 
   getHistoryItem(id) {
-    return this.db.prepare('SELECT * FROM history WHERE id = ?').get(id) ?? null;
+    return this.q.item.get(id) ?? null;
   }
 
   listHistory({ query = '', limit = 200 } = {}) {

@@ -23,7 +23,7 @@ class Tap extends AudioWorkletProcessor {
     const ch = inputs[0] && inputs[0][0];
     if (ch) for (let i = 0; i < ch.length; i++) {
       this.buf[this.n++] = ch[i];
-      if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice(0)); this.n = 0; }
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf, [this.buf.buffer]); this.buf = new Float32Array(1024); this.n = 0; }
     }
     return true;
   }
@@ -50,10 +50,12 @@ function ensureEngine() {
 let sfx = null;
 let levels = new Array(BARS).fill(0);
 
-function beep(kind, on) {
+// The beep context is suspended after each tone; a running AudioContext keeps Windows from sleeping.
+async function beep(kind, on) {
   if (!on) return;
   try {
     sfx = sfx || new AudioContext();
+    await sfx.resume();
     const t = sfx.currentTime;
     const o = sfx.createOscillator(), g = sfx.createGain();
     const [f1, f2] = kind === 'start' ? [660, 880] : kind === 'stop' ? [740, 520] : [300, 220];
@@ -64,12 +66,14 @@ function beep(kind, on) {
     g.gain.exponentialRampToValueAtTime(0.07, t + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
     o.connect(g).connect(sfx.destination);
+    o.onended = () => { o.disconnect(); g.disconnect(); sfx.suspend().catch(() => {}); };
     o.start(t); o.stop(t + 0.13);
   } catch { /* sound is optional */ }
 }
 
 function fmt(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 
+const STYLE = { clean: 'Light cleanup', rewrite: 'Rewrite' };
 const SPOKEN = { recording: 'Recording', transcribing: 'Transcribing', improving: 'Improving text', cancelled: 'Cancelled', updating: 'Updating JVoice. It will restart in a moment.' };
 function render(state, data = {}) {
   pill.dataset.state = state;
@@ -78,11 +82,14 @@ function render(state, data = {}) {
     case 'starting': label.textContent = 'Starting microphone'; break;
     case 'recording': break;
     case 'transcribing': label.textContent = 'Transcribing'; break;
-    case 'improving': label.textContent = 'Improving'; sub.textContent = 'AI cleanup'; break;
-    case 'done':
+    case 'improving': label.textContent = 'Improving'; sub.textContent = STYLE[data.style] || 'AI cleanup'; break;
+    case 'done': {
       label.textContent = data.pasted ? `Pasted ${data.words} ${data.words === 1 ? 'word' : 'words'}` : `Copied ${data.words} ${data.words === 1 ? 'word' : 'words'}`;
-      sub.textContent = data.note || (data.pasted ? '' : 'Press Ctrl+V to paste');
+      // Say what ran, so a cleanup that found nothing to fix is not mistaken for no cleanup.
+      const ran = !data.style ? '' : data.style === 'raw' ? 'No AI' : `${STYLE[data.style] || 'AI'}${data.changed ? '' : ', no changes'}`;
+      sub.textContent = data.note || [ran, data.pasted ? '' : 'Press Ctrl+V to paste'].filter(Boolean).join('. ');
       break;
+    }
     case 'error': label.textContent = data.message || 'Something went wrong.'; break;
     case 'cancelled': label.textContent = 'Cancelled'; break;
     case 'updating': label.textContent = 'Updating JVoice'; sub.textContent = data.version ? `Restarting into version ${data.version}` : 'Restarting in a moment'; break;
@@ -119,10 +126,11 @@ async function start({ id, deviceId, sounds, maxSeconds }) {
     me.ctx = ctx;
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'tap');
+    // Chunks are kept as 16 kHz 16-bit samples, half the memory of float audio.
     const take = (buf) => {
       if (!buf.length) return;
       if (!me.firstAt) me.firstAt = Date.now();
-      me.chunks.push(buf);
+      me.chunks.push(toInt16(resample(buf, ctx.sampleRate, TARGET_RATE)));
       let sum = 0, pk = 0;
       for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); sum += v * v; if (v > pk) pk = v; }
       if (pk > me.peak) me.peak = pk;
@@ -182,36 +190,42 @@ function resample(data, from, to) {
   return out;
 }
 
-function encodeWav(samples, rate) {
-  const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+function toInt16(samples) {
+  const out = new Int16Array(samples.length);
   for (let i = 0; i < samples.length; i++) {
     const s = Math.max(-1, Math.min(1, samples[i]));
-    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  return new Uint8Array(buf);
+  return out;
+}
+
+// Writes the WAV straight from the chunk list, so the recording is never held twice.
+function encodeWav(chunks, rate) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const buf = new ArrayBuffer(44 + total * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + total * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, total * 2, true);
+  const pcm = new Int16Array(buf, 44); // little-endian on every Windows machine
+  let o = 0; for (const c of chunks) { pcm.set(c, o); o += c.length; }
+  return { wav: new Uint8Array(buf), samples: total };
 }
 
 async function stop({ id }) {
   const r = rec;
   if (!r || r.id !== id) { window.jvoice.send('rec:done', { id, error: 'The microphone never started.' }); return; }
   if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
-  const rate = r.ctx.sampleRate;
   // Ask the worklet for its partial buffer and wait for it (or give up after 300 ms).
   await new Promise((res) => { r.flushed = res; r.node.port.postMessage('flush'); setTimeout(res, 300); });
   if (rec !== r) { window.jvoice.send('rec:done', { id, cancelled: true }); return; } // tells main the recorder is alive
   teardown();
   beep('stop', r.sounds);
-  const total = r.chunks.reduce((n, c) => n + c.length, 0);
-  const all = new Float32Array(total);
-  let o = 0; for (const c of r.chunks) { all.set(c, o); o += c.length; }
-  const pcm = resample(all, rate, TARGET_RATE);
-  const ms = Math.round((pcm.length / TARGET_RATE) * 1000);
-  window.jvoice.send('rec:done', { id, wav: encodeWav(pcm, TARGET_RATE), ms, peak: r.peak, lagMs: r.firstAt ? r.firstAt - r.startedAt : -1, ctxState: r.ctx.state, rate: r.ctx.sampleRate, requestedAt: r.requestedAt });
+  const { wav, samples } = encodeWav(r.chunks, TARGET_RATE);
+  r.chunks = [];
+  const ms = Math.round((samples / TARGET_RATE) * 1000);
+  window.jvoice.send('rec:done', { id, wav, ms, peak: r.peak, lagMs: r.firstAt ? r.firstAt - r.startedAt : -1, ctxState: r.ctx.state, rate: r.ctx.sampleRate, requestedAt: r.requestedAt });
 }
 
 window.jvoice.on('rec:start', start);
