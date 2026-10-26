@@ -14,7 +14,7 @@ const OWNER = 'Josephivgi', REPO = 'JVoice';
 const RELEASE_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEALfw9NCfPLMw5SCaUzy1428A7ofpD6RQahKcDakSQEdE=
 -----END PUBLIC KEY-----`;
-const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
+const CHECK_EVERY_MS = 60 * 60 * 1000;
 const FIRST_CHECK_DELAY_MS = 15 * 1000;
 const RESTART_COUNTDOWN_MS = 5 * 1000;
 
@@ -27,6 +27,18 @@ function verifySignature({ version, file, sha512, signature, publicKey = RELEASE
   } catch { return false; }
 }
 
+// GitHub hands the release notes over as HTML. The app shows them as plain text lines.
+function notesToText(notes) {
+  const html = Array.isArray(notes) ? notes.map((n) => n?.note || '').join('\n') : String(notes || '');
+  return html
+    .replace(/<li[^>]*>/gi, '- ')
+    .replace(/<\/(p|li|h[1-6]|ul|ol)>|<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
+    .split('\n').map((l) => l.trim()).filter(Boolean).join('\n')
+    .slice(0, 4000);
+}
+
 function sha512File(file) {
   return new Promise((resolve, reject) => {
     const h = crypto.createHash('sha512');
@@ -37,13 +49,14 @@ function sha512File(file) {
 class Updater extends EventEmitter {
   // isBusy: () => boolean, true while the user is dictating (the restart waits for idle).
   // fetch: used to download the signature (Electron's net.fetch in the app).
-  constructor({ app, isBusy, fetch: fetchImpl = fetch, log = console }) {
+  // justUpdated: { version, notes } when this start is the first one after an update.
+  constructor({ app, isBusy, fetch: fetchImpl = fetch, log = console, justUpdated = null }) {
     super();
     this.app = app;
     this.isBusy = isBusy;
     this.fetch = fetchImpl;
     this.log = log;
-    this.state = { status: app.isPackaged ? 'idle' : 'dev', version: app.getVersion() };
+    this.state = { status: app.isPackaged ? 'idle' : 'dev', version: app.getVersion(), justUpdated };
     this.autoUpdater = null;
     this.timer = null;
     this.restartTimer = null;
@@ -70,7 +83,7 @@ class Updater extends EventEmitter {
 
     autoUpdater.on('checking-for-update', () => this.setState({ status: 'checking', error: '' }));
     autoUpdater.on('update-not-available', () => this.setState({ status: 'current', checkedAt: Date.now() }));
-    autoUpdater.on('update-available', (info) => this.setState({ status: 'downloading', next: info.version, percent: 0 }));
+    autoUpdater.on('update-available', (info) => this.setState({ status: 'downloading', next: info.version, percent: 0, notes: notesToText(info.releaseNotes) }));
     autoUpdater.on('download-progress', (p) => this.setState({ status: 'downloading', percent: Math.round(p.percent) }));
     autoUpdater.on('update-downloaded', (info) => this.onDownloaded(info));
     autoUpdater.on('error', (err) => {
@@ -145,4 +158,4 @@ function friendly(err) {
   return 'The update check failed. JVoice will try again later.';
 }
 
-module.exports = { Updater, verifySignature, signedMessage, sha512File, RELEASE_KEY };
+module.exports = { notesToText, Updater, verifySignature, signedMessage, sha512File, RELEASE_KEY };

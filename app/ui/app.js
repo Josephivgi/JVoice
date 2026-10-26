@@ -643,6 +643,7 @@ function renderUpdate() {
     checking: 'Checking for updates…',
     current: 'JVoice is up to date.',
     downloading: `Downloading version ${s.next}… ${s.percent || 0}%`,
+    verifying: 'Checking that the update comes from JVoice…',
     ready: `Version ${s.next} is ready. JVoice restarts when you finish dictating.`,
     restarting: `Restarting into version ${s.next}…`,
     error: s.error || 'The update check failed.',
@@ -653,6 +654,13 @@ function renderUpdate() {
   btn.textContent = s.status === 'ready' || s.status === 'restarting' ? 'Restart now' : 'Check for updates';
   btn.disabled = ['checking', 'downloading'].includes(s.status);
   btn.classList.toggle('primary', s.status === 'ready');
+  // Notes of the version on its way, or of the one just installed.
+  const coming = ['downloading', 'verifying', 'ready', 'restarting'].includes(s.status) && s.notes;
+  const notes = coming ? s.notes : s.justUpdated?.notes;
+  const lines = (notes || '').split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
+  $('updNotes').hidden = !lines.length;
+  $('updNotesTitle').textContent = coming ? `Coming in version ${s.next}` : `What's new in version ${s.justUpdated?.version}`;
+  $('updNotesList').replaceChildren(...lines.map((l) => el('li', {}, l)));
 }
 $('updAction').addEventListener('click', () => {
   if (update.status === 'ready' || update.status === 'restarting') api.invoke('update:restart');

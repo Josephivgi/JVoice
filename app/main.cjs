@@ -517,6 +517,8 @@ function registerIpc() {
   handle('settings:set', (patch) => {
     const clean = { ...patch };
     delete clean.apiKeyEnc;
+    delete clean.lastVersion;
+    delete clean.updateNotes;
     if (clean.hotkey) {
       const msg = validateCombo(clean.hotkey);
       if (msg) throw new Error(msg);
@@ -794,24 +796,35 @@ app.whenReady().then(async () => {
   hotkey.on('interrupt', () => dictation.interrupt());
   try { hotkey.start(); } catch (err) { console.error('keyboard hook failed', err); }
   powerMonitor.on('lock-screen', () => { hotkey.reset(); if (dictation.state === 'recording') dictation.cancel(true); });
-  powerMonitor.on('resume', () => hotkey.reset());
+  powerMonitor.on('resume', () => { hotkey.reset(); updater?.check(); });
 
   createOverlay();
   // Started at login with a key saved: the main window is only made when the user opens it.
   const openNow = !START_HIDDEN || !getKey();
   if (openNow) createMainWindow();
 
-  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle', fetch: (url) => net.fetch(url) });
+  const prev = store.getSettings();
+  const justUpdated = app.isPackaged && prev.lastVersion && prev.lastVersion !== app.getVersion()
+    ? { version: app.getVersion(), notes: prev.updateNotes } : null;
+  if (app.isPackaged) store.setSettings({ lastVersion: app.getVersion(), updateNotes: '' });
+  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle', fetch: (url) => net.fetch(url), justUpdated });
   updater.on('state', (st) => {
     toMain('update', st);
     buildTrayMenu();
     if (st.status === 'restarting') overlayState('updating', { version: st.next }, 0);
   });
   updater.on('before-restart', () => {
+    store.setSettings({ updateNotes: updater.state.notes || '' });
     app.isQuitting = true;
     try { hotkey.stop(); } catch { /* already stopped */ }
   });
   updater.start();
+  if (justUpdated && Notification.isSupported()) {
+    const first = (justUpdated.notes || '').split('\n').find((l) => l.startsWith('- '));
+    const n = new Notification({ title: `JVoice updated to ${justUpdated.version}`, body: first ? first.slice(2) : 'Open JVoice to see what changed.', icon: ICON });
+    n.on('click', () => showMain('settings'));
+    n.show();
+  }
 
   tray = new Tray(trayIcon());
   tray.on('click', () => showMain());

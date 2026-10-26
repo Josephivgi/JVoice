@@ -65,3 +65,10 @@ test('line separators become new lines, invisible marks go, and console windows 
   assert.equal(oneLine('a\u2029b'), 'a b');
   assert.ok(isTerminal('ssh.exe', 'ConsoleWindowClass') && isTerminal('python.exe', 'CASCADIA_HOSTING_WINDOW_CLASS') && !isTerminal('code.exe', 'Chrome_WidgetWin_1'));
 });
+
+test('release notes from GitHub become plain lines', () => {
+  const { notesToText } = require('../app/updater.cjs');
+  const html = '<p><strong>New</strong></p>\n<ul>\n<li>Settings &gt; Model lists <code>DeepSeek</code> &amp; more.</li>\n<li>Two</li>\n</ul>';
+  assert.equal(notesToText(html), 'New\n- Settings > Model lists DeepSeek & more.\n- Two');
+  assert.equal(notesToText(null), '');
+});

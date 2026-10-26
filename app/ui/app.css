@@ -151,6 +151,9 @@ del::before { content: "removed "; }
 .setting-text { display: flex; flex-direction: column; min-width: 0; }
 .setting-text b { font-weight: 500; }
 .setting-text .muted { font-size: var(--fs-sm); }
+.whats-new { border-top: 1px solid var(--border); padding: var(--sp-3) var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
+.whats-new b { font-weight: 500; }
+.whats-new ul { margin: 0; padding-left: var(--sp-5); color: var(--text-2); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: var(--sp-1); }
 .seg { display: inline-flex; padding: 3px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); flex: none; }
 .seg button { height: 26px; padding: 0 12px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font: 500 var(--fs-sm) var(--font); cursor: pointer; white-space: nowrap; }
 .seg button:hover { color: var(--text); }

@@ -21,6 +21,9 @@ const DEFAULTS = {
   keepHistory: true,
   maxRecordSeconds: 600,
   closeHintShown: false,
+  lastVersion: '', // the version that ran last, so the first start after an update can say what changed
+  updateNotes: '', // notes of the update being installed, saved just before the restart
+
 };
 
 class Store {
