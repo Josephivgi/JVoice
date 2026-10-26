@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream: blob:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream: blob:">
   <title>JVoice</title>
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="app.css">
@@ -16,6 +16,8 @@
       </div>
       <button class="nav" data-page="home" aria-current="page">
         <svg viewBox="0 0 20 20"><path d="M3.5 9 10 3.5 16.5 9v7a1 1 0 0 1-1 1h-3v-5h-5v5h-3a1 1 0 0 1-1-1z"/></svg>Home</button>
+      <button class="nav" data-page="speed">
+        <svg viewBox="0 0 20 20"><path d="M3.8 14.5a6.5 6.5 0 1 1 12.4 0"/><path d="M10 12.2l3.2-4"/><circle cx="10" cy="12.6" r=".6"/></svg>Speed test</button>
       <button class="nav" data-page="history">
         <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.6"/></svg>History</button>
       <button class="nav" data-page="dictionary">
@@ -83,6 +85,88 @@
         </div>
         <ul class="hist" id="recent"></ul>
         </div>
+      </section>
+
+      <!-- SPEED TEST -->
+      <section class="page" id="page-speed" data-state="idle" hidden>
+        <header class="page-head">
+          <div>
+            <h1>Speed test</h1>
+            <p class="muted">Talk for as long as you like and see how fast you speak. The speech model writes down what you say, then JVoice counts the words and characters. No chat AI is used.</p>
+          </div>
+        </header>
+
+        <div class="card speed-result" id="speedResult" hidden>
+          <div class="speed-result-head">
+            <h2 id="speedResultTitle">Your result</h2>
+            <span class="muted" id="speedResultMeta"></span>
+          </div>
+          <dl class="speed-nums">
+            <div class="main"><dt>Words per minute</dt><dd id="resWpm">0</dd></div>
+            <div class="main"><dt>Characters per minute</dt><dd id="resCpm">0</dd></div>
+            <div><dt>Words</dt><dd id="resWords">0</dd></div>
+            <div><dt>Characters</dt><dd id="resChars">0</dd></div>
+          </dl>
+          <p class="item-warn" id="speedResultWarn" hidden></p>
+          <div class="speed-result-foot">
+            <button class="link" id="speedTextToggle" type="button" aria-expanded="false" aria-controls="speedTranscript">Show what JVoice heard</button>
+            <button class="btn sm" id="speedCopy" type="button">Copy result</button>
+          </div>
+          <p class="speed-transcript" id="speedTranscript" hidden></p>
+        </div>
+
+        <div class="card" id="speedSetup">
+          <div class="setting">
+            <div class="setting-text"><b>Length</b><span class="muted" id="speedLenHelp"></span></div>
+          </div>
+          <div class="speed-lens" role="radiogroup" aria-label="Test length">
+            <button role="radio" data-len="30" type="button">30 sec</button>
+            <button role="radio" data-len="60" type="button">1 min</button>
+            <button role="radio" data-len="120" type="button">2 min</button>
+            <button role="radio" data-len="300" type="button">5 min</button>
+            <button role="radio" data-len="600" type="button">10 min</button>
+            <button role="radio" data-len="1800" type="button">30 min</button>
+            <button role="radio" data-len="3600" type="button">1 hour</button>
+            <button role="radio" data-len="custom" type="button">Custom</button>
+            <button role="radio" data-len="0" type="button">No limit</button>
+          </div>
+          <div class="setting" id="speedCustomRow" hidden>
+            <div class="setting-text"><b>Custom length</b><span class="muted">From 1 to 180 minutes.</span></div>
+            <label class="row speed-custom"><input type="number" id="speedCustom" min="1" max="180" step="1" aria-label="Custom length in minutes"><span class="muted">minutes</span></label>
+          </div>
+          <div class="speed-go">
+            <button class="btn primary big" id="speedStart" type="button">Start test</button>
+            <span class="hint" id="speedStartHelp">Uses the microphone and speech model from Settings. OpenRouter charges the same as dictating for that long.</span>
+          </div>
+        </div>
+
+        <div class="card speed-run" id="speedRun" hidden>
+          <div class="speed-clock">
+            <div class="speed-time-wrap">
+              <span class="speed-time" id="speedTime">0:00</span>
+              <span class="speed-time-label" id="speedTimeLabel"></span>
+            </div>
+            <div class="speed-bar" id="speedBar" role="progressbar" aria-label="Test progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="speedBarFill"></span></div>
+            <div class="speed-level" aria-hidden="true"><span id="speedLevel"></span></div>
+          </div>
+          <dl class="speed-nums">
+            <div class="main"><dt>Words per minute</dt><dd id="runWpm">-</dd></div>
+            <div class="main"><dt>Characters per minute</dt><dd id="runCpm">-</dd></div>
+            <div><dt>Words</dt><dd id="runWords">0</dd></div>
+            <div><dt>Characters</dt><dd id="runChars">0</dd></div>
+          </dl>
+          <p class="speed-heard" id="speedHeard"></p>
+          <p class="hint" id="speedNote" role="status" aria-live="polite"></p>
+          <div class="row end">
+            <button class="btn ghost" id="speedCancel" type="button">Cancel</button>
+            <button class="btn primary" id="speedStop" type="button">Stop and see result</button>
+          </div>
+        </div>
+
+        <div class="section-head" id="speedPastHead" hidden>
+          <h3>Past results</h3>
+        </div>
+        <ul class="hist" id="speedList"></ul>
       </section>
 
       <!-- HISTORY -->
@@ -329,6 +413,7 @@
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="audio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -24,10 +24,19 @@ JVoice runs in the tray. Closing the window keeps it running; quit from the tray
 - **Dictionary**: words JVoice should always spell your way, and what the speech engine writes instead.
 - **History**: every dictation, the raw transcript, and Retry for recordings that failed to transcribe.
 
+### Speed test
+
+Open **Speed test**, pick a length (30 seconds up to 1 hour, a custom length up to 3 hours, or no limit), press **Start test** and talk. JVoice shows your words per minute and characters per minute while you talk, and the final result when the time is up or you press Stop.
+
+- The speech model (Scribe) writes down what you say. JVoice then counts the words and characters itself. No chat AI is used.
+- Characters are letters and numbers. Spaces and punctuation are not counted, since you do not say them.
+- The rates use the whole test time, pauses included.
+- Results are saved on this computer, with your best marked.
+
 ### Safety
 
 - If you switch windows while JVoice is working, or still hold keys when it is ready, the text is copied instead of pasted, so it never lands in the wrong place.
-- The key is encrypted with your Windows account (DPAPI). Settings, history and the dictionary live in a SQLite file in `%APPDATA%\JVoice`.
+- The key is encrypted with your Windows account (DPAPI). Settings, history, the dictionary and speed test results live in a SQLite file in `%APPDATA%\JVoice`.
 - Audio is only kept for dictations that failed, so you can retry them. Deleting the history entry deletes the audio.
 
 ## Develop
@@ -43,6 +52,7 @@ npm run dist       # build the Windows installer into dist/
 Test modes (no window is shown):
 
 - `electron . --transcribe file.wav` runs the full pipeline on a 16 kHz mono WAV with the saved key and prints the result.
+- `electron . --speed-test file.wav <length> <stopAfterMs> <dir>` runs the Speed test page offscreen with the WAV as the microphone and the saved key, prints the result, screenshots each stage into `<dir>`, then deletes the saved result. Length is 30, 60, ... 3600, 0 for no limit, or `custom2` for 2 minutes. A stopAfterMs above 0 presses Stop after that long.
 - `electron . --shots <dir>` renders every page and overlay state offscreen to PNGs.
 - `JVOICE_USER_DATA=<dir>` uses a separate data folder.
 

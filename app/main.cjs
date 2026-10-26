@@ -7,6 +7,7 @@ const {
 } = require('electron');
 const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
+const speed = require('./speed.cjs');
 const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs');
 const { Updater } = require('./updater.cjs');
 
@@ -22,8 +23,9 @@ const START_HIDDEN = process.argv.includes('--hidden');
 const TRANSCRIBE_ARG = devArg('--transcribe');
 const SHOTS_ARG = devArg('--shots');
 const RECORD_ARG = devArg('--record-test');
+const SPEED_ARG = devArg('--speed-test');
 const IMPORT_KEY = devArg('--import-key') > 0;
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || IMPORT_KEY;
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || SPEED_ARG > 0 || IMPORT_KEY;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
 const ASSETS = path.join(__dirname, '..', 'assets');
@@ -47,11 +49,11 @@ function serveUi() {
 const loadPage = (win, page) => win.loadURL(UI_URL + page);
 
 if (DEV && process.env.JVOICE_USER_DATA) app.setPath('userData', process.env.JVOICE_USER_DATA);
-if (RECORD_ARG > 0) {
+if (RECORD_ARG > 0 || SPEED_ARG > 0) {
   // Feeds a WAV file to getUserMedia as a fake microphone, so the real recorder code runs without a mic.
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
   app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
-  app.commandLine.appendSwitch('use-file-for-fake-audio-capture', `${path.resolve(process.argv[RECORD_ARG + 1])}%noloop`);
+  app.commandLine.appendSwitch('use-file-for-fake-audio-capture', `${path.resolve(process.argv[(RECORD_ARG > 0 ? RECORD_ARG : SPEED_ARG) + 1])}%noloop`);
 }
 app.setAppUserModelId('com.josephivgi.jvoice');
 if (!HEADLESS && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
@@ -112,6 +114,9 @@ function createMainWindow() {
   mainWin.removeMenu();
   loadPage(mainWin, 'index.html');
   lockDown(mainWin.webContents);
+  // A reloaded or crashed page has lost its speed test, so the shortcut and updates must not stay blocked.
+  mainWin.webContents.on('did-start-loading', () => speedTest.setActive(false));
+  mainWin.webContents.on('render-process-gone', () => speedTest.setActive(false));
   mainWin.on('close', (e) => {
     if (app.isQuitting) return;
     e.preventDefault();
@@ -209,7 +214,7 @@ function reportIssue(message, action = '') {
   broadcastStatus();
 }
 function statusPayload() {
-  return { state: dictation.state, paused: hotkey.paused, hookOk: hotkey.started, issue: lastIssue };
+  return { state: dictation.state, paused: hotkey.paused, hookOk: hotkey.started, issue: lastIssue, speedTest: speedTest.active };
 }
 function broadcastStatus() { toMain('status', statusPayload()); }
 function issueAction(err) {
@@ -245,6 +250,10 @@ const dictation = {
 
   start() {
     if (this.state !== 'idle') return;
+    if (speedTest.active) {
+      overlayState('error', { message: 'A speed test is running. Finish it first.' }, 2600);
+      return;
+    }
     const s = store.getSettings();
     if (!getKey()) {
       overlayState('error', { message: 'Add your OpenRouter key in JVoice first.' }, 2600);
@@ -429,6 +438,69 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
   return { raw, final, words, cost, aiError, cut, style, changed: final !== raw };
 }
 
+// ---------- speed test ----------
+// The Speed test page records and cuts the audio into pieces at pauses. Main transcribes each piece
+// with the speech model (no chat AI) and counts its words and characters.
+const speedTest = {
+  active: false,
+  abort: null,
+
+  setActive(on) {
+    if (on === this.active) return;
+    this.active = on;
+    if (this.abort) { this.abort.abort(); this.abort = null; }
+    if (on) this.abort = new AbortController();
+    // A test keeps running while the window is hidden in the tray, so the page must not be throttled.
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.setBackgroundThrottling(!on);
+    buildTrayMenu();
+    broadcastStatus();
+  },
+
+  // Returns { text, words, chars, cost }, or { error, fatal } when the piece could not be transcribed.
+  // fatal: the key or credits are the problem (or the test ended), so the rest would fail too.
+  async transcribe(wav) {
+    const bad = speed.checkPiece(wav);
+    if (bad) throw new Error(bad);
+    if (!this.active) return { error: 'The speed test is not running.', fatal: true };
+    const key = getKey();
+    if (!key) return { error: 'Add your OpenRouter key first.', fatal: true };
+    const s = store.getSettings();
+    const { signal } = this.abort;
+    const audio = Buffer.from(wav.buffer, wav.byteOffset, wav.byteLength);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const t = await api.transcribe({ key, model: s.sttModel, wav: audio, language: s.language, signal });
+        const text = api.stripSoundTags(t.text);
+        return { text, ...speed.speechCounts(text, s.language), cost: t.cost };
+      } catch (err) {
+        if (signal.aborted) return { error: 'Cancelled.', fatal: true };
+        const fatal = [401, 402, 403].includes(err.status);
+        if (fatal || err.status === 400 || attempt >= 2) return { error: err.message, fatal };
+        // Network trouble or a busy provider: wait a little and send the piece again.
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        if (signal.aborted) return { error: 'Cancelled.', fatal: true };
+      }
+    }
+  },
+
+  // Words and characters are counted again here from the transcript, so the saved numbers never
+  // depend on the page.
+  save(r) {
+    const s = store.getSettings();
+    const transcript = String(r?.transcript ?? '').slice(0, 1000000).trim();
+    const cap = (v) => Math.min(speed.MAX_TEST_SECONDS + 60, Math.max(0, Number(v) || 0));
+    const seconds = cap(r?.seconds);
+    if (seconds < 1) throw new Error('The test was too short to measure.');
+    const counts = speed.speechCounts(transcript, s.language);
+    if (!counts.words) throw new Error('No speech was heard.');
+    return store.addSpeedTest({
+      planned_seconds: speed.plannedSeconds(r?.planned), seconds, missed_seconds: cap(r?.missed),
+      ...counts, ...speed.rates({ ...counts, seconds }), transcript,
+      language: s.language, stt_model: s.sttModel, cost: Math.max(0, Number(r?.cost) || 0),
+    });
+  },
+};
+
 // History rows store only the WAV file name. Anything else is resolved inside failedDir, so a bad
 // row can never point JVoice at another file.
 function audioFile(name) {
@@ -537,6 +609,7 @@ function registerIpc() {
     if ('language' in clean) clean.language = str(clean.language, 8).trim().toLowerCase().replace(/[^a-z-]/g, '');
     if ('aiCustomPrompt' in clean) clean.aiCustomPrompt = str(clean.aiCustomPrompt, 4000);
     if ('micDeviceId' in clean) clean.micDeviceId = str(clean.micDeviceId, 256);
+    if ('speedLength' in clean) clean.speedLength = speed.plannedSeconds(clean.speedLength);
     if ('maxRecordSeconds' in clean) clean.maxRecordSeconds = Math.min(600, Math.max(5, Math.round(Number(clean.maxRecordSeconds)) || 600));
     for (const k of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'keepHistory', 'closeHintShown']) {
       if (k in clean) clean[k] = !!clean[k];
@@ -581,6 +654,11 @@ function registerIpc() {
     if (r.final) clipboard.writeText(r.final);
     return r;
   });
+  handle('speed:active', (on) => { speedTest.setActive(!!on); return true; });
+  handle('speed:transcribe', (wav) => speedTest.transcribe(wav));
+  handle('speed:save', (r) => speedTest.save(r));
+  handle('speed:list', () => store.listSpeedTests(50));
+  handle('speed:delete', (id) => { store.deleteSpeedTest(Number(id)); return true; });
   handle('clipboard:write', (text) => { clipboard.writeText(String(text ?? '')); return true; });
   handle('stats', () => store.stats());
 
@@ -673,7 +751,7 @@ async function runShots(dir) {
     for (const [w, h] of [[980, 680], [760, 540]]) {
       const win = new BrowserWindow({ show: false, width: w, height: h, useContentSize: true, webPreferences: { offscreen: true, preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
       await loadPage(win, 'index.html');
-      for (const page of ['home', 'history', 'dictionary', 'settings']) {
+      for (const page of ['home', 'speed', 'history', 'dictionary', 'settings']) {
         win.webContents.send('nav', page);
         await shot(win, `${theme}-${w}-${page}`);
         if (page === 'history') {
@@ -731,6 +809,72 @@ async function runRecordTest(ms, outFile) {
   app.exit(0);
 }
 
+// --speed-test <input.wav> <length> <stopAfterMs> <shotDir>: runs the real Speed test page in a hidden
+// offscreen window, with the WAV as the microphone and real transcription through the saved key.
+// <length> is a length button (30, 60, ... or 0 for "No limit"), or custom<minutes> such as custom2.
+// stopAfterMs > 0 clicks Stop after that long.
+// Prints what the page showed and the row it saved, screenshots each stage, then deletes the row
+// with the page's Delete button.
+async function runSpeedTest(length, stopAfterMs, dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  registerIpc();
+  mainWin = new BrowserWindow({ show: false, width: 980, height: 760, useContentSize: true, webPreferences: webPrefs({ offscreen: true }) });
+  const wc = mainWin.webContents;
+  const errors = [];
+  wc.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message); });
+  await loadPage(mainWin, 'index.html');
+  const js = (code) => wc.executeJavaScript(code);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const shot = async (name) => fs.writeFileSync(path.join(dir, `${name}.png`), (await wc.capturePage()).toPNG());
+  const viewState = () => js(`document.getElementById('page-speed').dataset.state`);
+  await wait(800);
+  wc.send('nav', 'speed');
+  await wait(600);
+  await shot('1-setup');
+  // "custom<minutes>" picks Custom and types the minutes, like a user would.
+  const custom = /^custom(\d+)$/.exec(String(length));
+  const len = custom ? 'custom' : String(length), minutes = custom ? custom[1] : '';
+  await js(`document.querySelector('[data-len="${len}"]').click()`);
+  if (minutes) await js(`(() => { const i = document.getElementById('speedCustom'); i.value = '${Number(minutes)}'; i.dispatchEvent(new Event('change')); })()`);
+  await wait(400);
+  await js(`document.getElementById('speedStart').click()`);
+  const started = Date.now();
+  const log = [];
+  let shotAt = 0, stopped = false, finishingShot = false;
+  for (;;) {
+    await wait(1000);
+    const st = await viewState();
+    const nums = await js(`[...document.querySelectorAll('#speedRun dd')].map((d) => d.textContent).join(' | ') + ' @ ' + document.getElementById('speedTime').textContent`);
+    log.push(`${Math.round((Date.now() - started) / 1000)}s ${st}: ${nums}`);
+    process.stderr.write(`${log.at(-1)}\n`);
+    if (st === 'running' && Date.now() - shotAt > 15000) { shotAt = Date.now(); await shot(`2-running-${Math.round((Date.now() - started) / 1000)}s`); }
+    if (stopAfterMs > 0 && !stopped && st === 'running' && Date.now() - started >= stopAfterMs) { stopped = true; await js(`document.getElementById('speedStop').click()`); }
+    if (st === 'finishing' && !finishingShot) { finishingShot = true; await shot('3-finishing'); }
+    if (st === 'done' || st === 'idle' || Date.now() - started > 4 * 60 * 1000) break;
+  }
+  await wait(600);
+  await shot('4-done');
+  const shown = await js(`({
+    state: document.getElementById('page-speed').dataset.state,
+    result: [...document.querySelectorAll('#speedResult dt')].map((d) => d.textContent + ': ' + d.nextElementSibling.textContent),
+    meta: document.getElementById('speedResultMeta').textContent,
+    warn: document.getElementById('speedResultWarn').textContent,
+    transcript: document.getElementById('speedTranscript').textContent,
+    listed: document.querySelectorAll('#speedList .item').length,
+    toast: document.getElementById('toast').className.includes('show') ? document.getElementById('toast').textContent : '',
+  })`);
+  const row = store.listSpeedTests(1)[0] || null;
+  const saved = row && row.created_at >= started ? row : null;
+  let deleted = null;
+  if (saved) {
+    await js(`document.querySelector('#speedList .item button[aria-label="Delete result"]').click()`);
+    await wait(800);
+    deleted = !store.listSpeedTests(50).some((r) => r.id === saved.id);
+  }
+  process.stdout.write(JSON.stringify({ log, shown, saved, deleted, speedActiveAfter: speedTest.active, errors }, null, 2) + '\n');
+  app.exit(shown.state === 'done' && saved && deleted && !errors.length ? 0 : 1);
+}
+
 async function runTranscribeFile(file) {
   try {
     if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
@@ -785,6 +929,7 @@ app.whenReady().then(async () => {
       return app.exit(0);
     } catch (err) { process.stderr.write(`ERROR: ${err.message}\n`); return app.exit(1); }
   }
+  if (SPEED_ARG > 0) return runSpeedTest(process.argv[SPEED_ARG + 2], Number(process.argv[SPEED_ARG + 3]) || 0, path.resolve(process.argv[SPEED_ARG + 4] || 'speed-shots'));
   if (RECORD_ARG > 0) return runRecordTest(Number(process.argv[RECORD_ARG + 2]) || 4000, path.resolve(process.argv[RECORD_ARG + 3] || 'record-test.wav'));
   if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));
 
@@ -807,7 +952,7 @@ app.whenReady().then(async () => {
   const justUpdated = app.isPackaged && prev.lastVersion && prev.lastVersion !== app.getVersion()
     ? { version: app.getVersion(), notes: prev.updateNotes } : null;
   if (app.isPackaged) store.setSettings({ lastVersion: app.getVersion(), updateNotes: '' });
-  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle', fetch: (url) => net.fetch(url), justUpdated });
+  updater = new Updater({ app, isBusy: () => dictation.state !== 'idle' || speedTest.active, fetch: (url) => net.fetch(url), justUpdated });
   updater.on('state', (st) => {
     toMain('update', st);
     buildTrayMenu();

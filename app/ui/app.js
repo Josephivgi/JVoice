@@ -112,6 +112,7 @@ function go(page) {
   if (page === 'dictionary') loadDictionary();
   if (page === 'settings') { renderSettings(); loadKeyInfo(); loadMics(); loadModels(); }
   if (page === 'home') loadHome();
+  if (page === 'speed') loadSpeed();
   if (page !== 'settings') stopMicTest();
 }
 document.querySelectorAll('.nav').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
@@ -132,6 +133,7 @@ function renderStatus() {
   else if (settings && !settings.hasKey) { state = 'nokey'; text = 'Needs an OpenRouter key'; }
   else if (status.state === 'recording') text = 'Listening';
   else if (status.state === 'processing') text = 'Working';
+  else if (status.speedTest) { state = 'recording'; text = 'Speed test running'; }
   else if (status.paused) { state = 'paused'; text = 'Shortcut paused'; }
   s.dataset.state = state;
   $('statusText').textContent = text;
@@ -223,6 +225,387 @@ async function saveKey(input, msg, btn) {
     msg.textContent = err.message;
     return false;
   } finally { btn.disabled = false; btn.textContent = 'Save key'; }
+}
+
+// ---------- speed test ----------
+// Records in this window and cuts the audio into pieces at pauses. Main transcribes each piece while
+// the user keeps talking, so the counts update during the test. Rates use the whole time recorded,
+// pauses included: they say how much someone says in that time.
+const AUDIO = window.JVoiceAudio;
+const RATE = AUDIO.TARGET_RATE;
+const LENGTH_PRESETS = [30, 60, 120, 300, 600, 1800, 3600, 0];
+let speedRun = null;
+let speedCustom = false; // Custom picked, even when its minutes match a preset
+let speedRows = [];
+
+function clock(sec) {
+  const s = Math.max(0, Math.floor(sec)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+}
+// "1 min 30 sec", "1 hour", "45 sec"
+function lengthName(sec) {
+  const s = Math.round(sec), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const parts = [];
+  if (h) parts.push(`${h} ${h === 1 ? 'hour' : 'hours'}`);
+  if (m) parts.push(`${m} min`);
+  if (r || !parts.length) parts.push(`${r} sec`);
+  return parts.join(' ');
+}
+const num = (n) => Math.round(n).toLocaleString();
+const perMin = (count, sec) => (sec > 0 ? count / (sec / 60) : 0);
+
+function micError(err) {
+  const name = err && err.name;
+  return name === 'NotAllowedError' ? 'Microphone access is blocked. Allow it in Windows privacy settings.'
+    : name === 'NotFoundError' || name === 'OverconstrainedError' ? 'No microphone found. Pick one in Settings.'
+    : name === 'NotReadableError' ? 'The microphone is busy in another app.'
+    : `Could not start the microphone: ${err.message || err}`;
+}
+
+function speedLength() {
+  const v = settings?.speedLength ?? 60;
+  return speedCustom ? Math.min(180, Math.max(1, Math.round(Number($('speedCustom').value) || 1))) * 60 : v;
+}
+function renderSpeedSetup() {
+  if (!settings) return;
+  const v = settings.speedLength;
+  if (!LENGTH_PRESETS.includes(v)) speedCustom = true;
+  setRadio('[data-len]', 'len', speedCustom ? 'custom' : String(v));
+  $('speedCustomRow').hidden = !speedCustom;
+  if (document.activeElement !== $('speedCustom')) $('speedCustom').value = String(Math.max(1, Math.round((v || 900) / 60)));
+  const len = speedLength();
+  $('speedLenHelp').textContent = len ? `The test stops by itself after ${lengthName(len)}. You can stop early.` : 'The test runs until you press Stop.';
+  $('speedStart').textContent = $('page-speed').dataset.state === 'done' ? 'Test again' : 'Start test';
+}
+document.querySelectorAll('[data-len]').forEach((b) => b.addEventListener('click', () => {
+  if (speedRun) return;
+  if (b.dataset.len === 'custom') {
+    speedCustom = true;
+    renderSpeedSetup();
+    save({ speedLength: speedLength() }, true);
+    $('speedCustom').focus();
+    return;
+  }
+  speedCustom = false;
+  save({ speedLength: Number(b.dataset.len) }, true).then(renderSpeedSetup);
+}));
+$('speedCustom').addEventListener('change', () => save({ speedLength: speedLength() }, true).then(renderSpeedSetup));
+
+// idle: pick a length. starting: opening the mic. running. finishing: last pieces being counted.
+// done: result shown above the setup.
+function setSpeedView(state) {
+  $('page-speed').dataset.state = state;
+  const busy = ['starting', 'running', 'finishing'].includes(state);
+  $('speedRun').hidden = !busy;
+  $('speedSetup').hidden = busy;
+  $('speedResult').hidden = state !== 'done';
+  $('speedStop').disabled = state !== 'running';
+  $('speedStop').textContent = state === 'finishing' ? 'Counting…' : 'Stop and see result';
+  if (state === 'starting') {
+    $('speedTime').textContent = clock(speedRun?.planned || 0);
+    $('speedTimeLabel').textContent = 'Starting microphone';
+    $('speedNote').textContent = '';
+    $('speedHeard').textContent = '';
+    for (const id of ['runWpm', 'runCpm']) $(id).textContent = '-';
+    for (const id of ['runWords', 'runChars']) $(id).textContent = '0';
+    $('speedBarFill').style.width = '0';
+    $('speedBar').hidden = !speedRun?.planned;
+  }
+  if (state === 'finishing') $('speedNote').textContent = 'Counting the last words…';
+  renderSpeedSetup();
+}
+
+function drawSpeed() {
+  const r = speedRun;
+  if (!r) return;
+  const done = r.samples / RATE;
+  if (r.planned) {
+    $('speedTime').textContent = clock(Math.ceil(r.planned - done));
+    $('speedTimeLabel').textContent = 'left';
+    const pct = Math.min(100, (done / r.planned) * 100);
+    $('speedBarFill').style.width = `${pct}%`;
+    if (performance.now() - (r.saidAt || 0) > 1000) { r.saidAt = performance.now(); $('speedBar').setAttribute('aria-valuenow', String(Math.round(pct))); }
+  } else {
+    $('speedTime').textContent = clock(done);
+    $('speedTimeLabel').textContent = 'so far';
+  }
+  $('speedLevel').style.transform = `scaleX(${Math.min(1, r.level * 9)})`;
+  r.raf = requestAnimationFrame(drawSpeed);
+}
+
+function renderSpeedNums(r) {
+  if (r !== speedRun) return;
+  const sec = r.okSamples / RATE;
+  // The rate shows once some speech is counted; a few seconds of audio would give a wild number.
+  const ready = sec >= 5 && r.words > 0;
+  $('runWpm').textContent = ready ? num(perMin(r.words, sec)) : '-';
+  $('runCpm').textContent = ready ? num(perMin(r.chars, sec)) : '-';
+  $('runWords').textContent = num(r.words);
+  $('runChars').textContent = num(r.chars);
+  const heard = r.texts.filter(Boolean).join(' ');
+  $('speedHeard').textContent = heard.length > 320 ? `…${heard.slice(-320).replace(/^\S*\s/, '')}` : heard;
+  if (r.state === 'running') {
+    $('speedNote').textContent = r.lastError ? `Part of the recording could not be counted: ${r.lastError}`
+      : r.words ? 'Counts update every few seconds as JVoice writes down what you said.'
+      : 'Start talking. Counts show up a few seconds after you start.';
+  }
+}
+
+async function startSpeedTest() {
+  if (speedRun || !settings) return;
+  if (!settings.hasKey) { toast('Add your OpenRouter key on Home first.', true); return; }
+  const me = speedRun = {
+    planned: speedLength(), state: 'starting', samples: 0, level: 0,
+    seg: AUDIO.makeSegmenter(), next: 0, pending: [], inflight: 0, texts: [],
+    words: 0, chars: 0, okSamples: 0, missedSamples: 0, cost: 0, lastError: '',
+  };
+  setSpeedView('starting');
+  // The test starts with the first audio, not when the mic opens, so no word said before the audio
+  // engine runs is lost. If no audio comes at all, the test gives up instead of waiting forever.
+  me.noAudio = setTimeout(() => {
+    if (speedRun !== me || me.state !== 'starting') return;
+    failSpeedStart(me, 'The microphone is not sending any sound. Check the input device in Settings.');
+    // The engine may be what is stuck, so the next start makes a new one.
+    me.ctx?.close().catch(() => {});
+    speedEngineP = null;
+  }, 10000);
+  try {
+    await api.invoke('speed:active', true);
+    const id = settings.micDeviceId;
+    // Open the mic and start the audio engine at the same time; each can take a second or more.
+    const [stream, ctx] = await Promise.all([
+      navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: id ? { exact: id } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      }).then((s) => {
+        me.stream = s;
+        if (speedRun !== me) s.getTracks().forEach((t) => t.stop()); // cancelled or failed meanwhile
+        return s;
+      }),
+      speedEngine().then(async (c) => { me.ctx = c; await c.resume(); return c; }),
+    ]);
+    if (speedRun !== me) { closeSpeedMic(me); return; }
+    me.resample = AUDIO.makeResampler(ctx.sampleRate, RATE);
+    me.src = ctx.createMediaStreamSource(stream);
+    me.node = new AudioWorkletNode(ctx, 'tap');
+    me.node.port.onmessage = (e) => onSpeedAudio(me, e.data.flushed || e.data, !!e.data.flushed);
+    me.src.connect(me.node);
+    stream.getAudioTracks()[0].addEventListener('ended', () => finishSpeedTest(me, 'The microphone was disconnected, so the test ended early.'));
+  } catch (err) {
+    if (speedRun === me) failSpeedStart(me, err.name ? micError(err) : err.message);
+  }
+}
+
+function failSpeedStart(me, message) {
+  closeSpeedMic(me);
+  speedRun = null;
+  api.invoke('speed:active', false).catch(() => {});
+  setSpeedView(speedHasResult ? 'done' : 'idle');
+  toast(message, true);
+}
+
+function onSpeedAudio(me, buf, isFlush) {
+  if (speedRun !== me) return;
+  if (me.state === 'starting' && !isFlush) {
+    clearTimeout(me.noAudio);
+    me.state = 'running';
+    setSpeedView('running');
+    renderSpeedNums(me);
+    me.raf = requestAnimationFrame(drawSpeed);
+  }
+  if (me.state === 'running' || isFlush) {
+    let x = me.resample(buf);
+    const limit = me.planned ? me.planned * RATE : Infinity;
+    if (me.samples + x.length > limit) x = x.subarray(0, Math.max(0, limit - me.samples));
+    if (x.length) {
+      let sum = 0, pk = 0;
+      for (let i = 0; i < x.length; i++) { const v = Math.abs(x[i]); sum += v * v; if (v > pk) pk = v; }
+      const level = Math.sqrt(sum / x.length);
+      me.level = me.level * 0.6 + level * 0.4;
+      me.samples += x.length;
+      const piece = me.seg.push(AUDIO.toInt16(x), level, pk);
+      if (piece) sendPiece(me, piece);
+    }
+    if (me.state === 'running' && me.samples >= limit) finishSpeedTest(me);
+  }
+  if (isFlush) me.flushed?.();
+}
+
+function sendPiece(me, piece) {
+  me.pending.push({ index: me.next++, ...piece });
+  pumpPieces(me);
+}
+// Two pieces at a time: enough to keep up with speech, without flooding OpenRouter.
+function pumpPieces(me) {
+  while (me.inflight < 2 && me.pending.length && !me.fatal) {
+    const p = me.pending.shift();
+    me.inflight++;
+    transcribePiece(me, p).finally(() => {
+      me.inflight--;
+      pumpPieces(me);
+      if (!me.inflight && (!me.pending.length || me.fatal)) me.idle?.();
+    });
+  }
+}
+async function transcribePiece(me, p) {
+  // A piece with no sound, or too short to hold a word, is a pause: it counts as time, not words.
+  if (p.peak < 0.01 || p.samples < 0.35 * RATE) { me.okSamples += p.samples; renderSpeedNums(me); return; }
+  const { wav } = AUDIO.encodeWav(p.chunks, RATE);
+  p.chunks = null;
+  let r;
+  try { r = await api.invoke('speed:transcribe', wav); } catch (err) { r = { error: err.message }; }
+  if (speedRun !== me) return;
+  if (r.error) {
+    me.missedSamples += p.samples;
+    me.lastError = r.error;
+    if (r.fatal && !me.fatal) { me.fatal = r.error; finishSpeedTest(me, r.error); }
+  } else {
+    me.okSamples += p.samples;
+    me.words += r.words; me.chars += r.chars; me.cost += r.cost;
+    me.texts[p.index] = r.text;
+  }
+  renderSpeedNums(me);
+}
+
+function closeSpeedMic(me) {
+  cancelAnimationFrame(me.raf);
+  clearTimeout(me.noAudio);
+  try { me.src?.disconnect(); me.node?.disconnect(); } catch { /* already gone */ }
+  if (me.node) { me.node.port.postMessage('dispose'); me.node.port.onmessage = null; }
+  me.stream?.getTracks().forEach((t) => t.stop());
+  me.ctx?.suspend().catch(() => {}); // kept for the next test; a running context keeps Windows awake
+}
+
+// One audio engine with the worklet loaded, made when the Speed test page first opens and kept
+// suspended between tests. Making it at Start took a few seconds before the first audio arrived.
+let speedEngineP = null;
+function speedEngine() {
+  if (!speedEngineP) {
+    speedEngineP = (async () => {
+      let c;
+      try { c = new AudioContext({ sampleRate: RATE }); } catch { c = new AudioContext(); }
+      const url = URL.createObjectURL(new Blob([AUDIO.WORKLET], { type: 'application/javascript' }));
+      try { await c.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      if (!speedRun) await c.suspend();
+      return c;
+    })();
+    speedEngineP.catch(() => { speedEngineP = null; }); // try again at the next start
+  }
+  return speedEngineP;
+}
+
+async function finishSpeedTest(me, error = '') {
+  if (speedRun !== me || me.state === 'finishing') return;
+  me.state = 'finishing';
+  // Collect the last fraction of a second the worklet still holds, then close the mic.
+  if (me.node && !error) await new Promise((res) => { me.flushed = res; me.node.port.postMessage('flush'); setTimeout(res, 300); });
+  if (speedRun !== me) return;
+  closeSpeedMic(me);
+  const last = me.seg.flush();
+  if (last) sendPiece(me, last);
+  setSpeedView('finishing');
+  await new Promise((res) => { if (!me.inflight && (!me.pending.length || me.fatal)) res(); else me.idle = res; });
+  if (speedRun !== me) return;
+  // Pieces never sent after a key or credit problem did not get counted.
+  for (const p of me.pending.splice(0)) me.missedSamples += p.samples;
+  const seconds = me.okSamples / RATE, missed = me.missedSamples / RATE;
+  const transcript = me.texts.filter(Boolean).join(' ');
+  speedRun = null;
+  let row = null, saveError = '';
+  if (me.words) {
+    try { row = await api.invoke('speed:save', { planned: me.planned, seconds, missed, transcript, cost: me.cost }); } catch (err) { saveError = err.message; }
+  }
+  api.invoke('speed:active', false).catch(() => {});
+  if (!row) {
+    setSpeedView(speedHasResult ? 'done' : 'idle');
+    toast(error || saveError || (missed ? `Nothing could be counted. ${me.lastError}` : 'No speech was heard. Check your microphone in Settings.'), true);
+    return;
+  }
+  const warn = [];
+  if (error) warn.push(error);
+  if (missed >= 1) warn.push(`${lengthName(missed)} of the recording could not be transcribed, so the rates use the other ${lengthName(seconds)}.${me.lastError && !error ? ` ${me.lastError}` : ''}`);
+  if (seconds < 15) warn.push('Short tests are less accurate. Try a minute or more.');
+  showSpeedResult(row, warn.join(' '));
+  loadSpeedList();
+}
+
+let speedHasResult = false;
+function showSpeedResult(row, warn = '') {
+  speedHasResult = true;
+  const best = Math.max(...speedRows.map((r) => r.wpm)); // the earlier results; this one is not in the list yet
+  $('speedResultTitle').textContent = speedRows.length && row.wpm > best ? 'Your result, a new best' : 'Your result';
+  $('speedResultMeta').textContent = `${lengthName(row.seconds + row.missed_seconds)} of talking`;
+  $('resWpm').textContent = num(row.wpm);
+  $('resCpm').textContent = num(row.cpm);
+  $('resWords').textContent = num(row.words);
+  $('resChars').textContent = num(row.chars);
+  $('speedResultWarn').textContent = warn;
+  $('speedResultWarn').hidden = !warn;
+  $('speedTranscript').textContent = row.transcript;
+  $('speedTranscript').hidden = true;
+  $('speedTextToggle').setAttribute('aria-expanded', 'false');
+  $('speedTextToggle').textContent = 'Show what JVoice heard';
+  $('speedCopy').onclick = async () => {
+    await api.invoke('clipboard:write', `${num(row.wpm)} words per minute, ${num(row.cpm)} characters per minute (${num(row.words)} words in ${lengthName(row.seconds)})`);
+    toast('Copied');
+  };
+  setSpeedView('done');
+}
+$('speedTextToggle').addEventListener('click', (e) => {
+  const t = $('speedTranscript');
+  t.hidden = !t.hidden;
+  e.currentTarget.setAttribute('aria-expanded', String(!t.hidden));
+  e.currentTarget.textContent = t.hidden ? 'Show what JVoice heard' : 'Hide what JVoice heard';
+});
+
+function cancelSpeedTest() {
+  const me = speedRun;
+  if (!me) return;
+  speedRun = null;
+  closeSpeedMic(me);
+  api.invoke('speed:active', false).catch(() => {}); // also stops pieces still being transcribed
+  setSpeedView(speedHasResult ? 'done' : 'idle');
+}
+
+$('speedStart').addEventListener('click', startSpeedTest);
+$('speedStop').addEventListener('click', () => { if (speedRun?.state === 'running') finishSpeedTest(speedRun); });
+$('speedCancel').addEventListener('click', cancelSpeedTest);
+
+function speedItem(row, best) {
+  const text = el('div', { class: 'item-text', hidden: true }, row.transcript);
+  const toggle = el('button', { class: 'btn ghost sm', type: 'button', 'aria-expanded': 'false', onclick: (e) => {
+    text.hidden = !text.hidden;
+    e.currentTarget.setAttribute('aria-expanded', String(!text.hidden));
+    e.currentTarget.textContent = text.hidden ? 'Show text' : 'Hide text';
+  } }, 'Show text');
+  const actions = el('div', { class: 'item-actions' }, toggle,
+    el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Delete', 'aria-label': 'Delete result', onclick: async () => {
+      try { await api.invoke('speed:delete', row.id); loadSpeedList(); } catch (err) { toast(err.message, true); }
+    } }, svg(ICONS.trash)));
+  const length = row.planned_seconds ? lengthName(row.seconds + row.missed_seconds) : `${lengthName(row.seconds + row.missed_seconds)}, no limit`;
+  return el('li', { class: 'item' },
+    el('div', { class: 'item-meta' },
+      el('span', {}, when(row.created_at)), el('span', {}, '·'), el('span', {}, length),
+      best ? el('span', { class: 'tag best' }, 'Best') : null,
+      actions),
+    el('div', { class: 'speed-row' },
+      el('span', {}, el('b', {}, num(row.wpm)), ' words per minute'),
+      el('span', {}, el('b', {}, num(row.cpm)), ' characters per minute'),
+      el('span', { class: 'muted' }, `${num(row.words)} words, ${num(row.chars)} characters`)),
+    text);
+}
+async function loadSpeedList() {
+  try {
+    speedRows = await api.invoke('speed:list');
+    const best = speedRows.length > 1 ? Math.max(...speedRows.map((r) => r.wpm)) : -1;
+    const bestId = speedRows.find((r) => r.wpm === best)?.id;
+    $('speedList').replaceChildren(...speedRows.map((r) => speedItem(r, r.id === bestId)));
+    $('speedPastHead').hidden = !speedRows.length;
+  } catch (err) { toast(err.message, true); }
+}
+function loadSpeed() {
+  if (!speedRun) setSpeedView(speedHasResult ? 'done' : 'idle');
+  speedEngine().catch(() => {});
+  loadSpeedList();
 }
 
 // ---------- history ----------

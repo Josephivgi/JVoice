@@ -1,5 +1,5 @@
 'use strict';
-// SQLite storage for settings, history and the personal dictionary.
+// SQLite storage for settings, history, the personal dictionary and speed test results.
 const { DatabaseSync } = require('node:sqlite');
 
 const DEFAULTS = {
@@ -23,6 +23,7 @@ const DEFAULTS = {
   closeHintShown: false,
   lastVersion: '', // the version that ran last, so the first start after an update can say what changed
   updateNotes: '', // notes of the update being installed, saved just before the restart
+  speedLength: 60, // speed test length in seconds; 0 = until the user stops
 
 };
 
@@ -54,6 +55,22 @@ class Store {
         term TEXT NOT NULL UNIQUE COLLATE NOCASE,
         heard_as TEXT NOT NULL DEFAULT ''
       );
+      CREATE TABLE IF NOT EXISTS speed_tests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        planned_seconds INTEGER NOT NULL DEFAULT 0,
+        seconds REAL NOT NULL DEFAULT 0,
+        missed_seconds REAL NOT NULL DEFAULT 0,
+        words INTEGER NOT NULL DEFAULT 0,
+        chars INTEGER NOT NULL DEFAULT 0,
+        wpm INTEGER NOT NULL DEFAULT 0,
+        cpm INTEGER NOT NULL DEFAULT 0,
+        transcript TEXT NOT NULL DEFAULT '',
+        language TEXT NOT NULL DEFAULT '',
+        stt_model TEXT NOT NULL DEFAULT '',
+        cost REAL NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS speed_created ON speed_tests(created_at DESC);
     `);
     // Added in 0.2.0: the length limit a dictation was cut to (0 = not cut).
     if (!this.db.prepare('PRAGMA table_info(history)').all().some((c) => c.name === 'cut')) {
@@ -164,6 +181,24 @@ class Store {
   deleteDictionary(id) {
     this.db.prepare('DELETE FROM dictionary WHERE id = ?').run(id);
     return this.listDictionary();
+  }
+
+  addSpeedTest(row) {
+    const r = this.db.prepare(`INSERT INTO speed_tests
+      (created_at, planned_seconds, seconds, missed_seconds, words, chars, wpm, cpm, transcript, language, stt_model, cost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      row.created_at ?? Date.now(), row.planned_seconds ?? 0, row.seconds ?? 0, row.missed_seconds ?? 0,
+      row.words ?? 0, row.chars ?? 0, row.wpm ?? 0, row.cpm ?? 0, row.transcript ?? '',
+      row.language ?? '', row.stt_model ?? '', row.cost ?? 0);
+    return this.db.prepare('SELECT * FROM speed_tests WHERE id = ?').get(Number(r.lastInsertRowid));
+  }
+
+  listSpeedTests(limit = 50) {
+    return this.db.prepare('SELECT * FROM speed_tests ORDER BY created_at DESC LIMIT ?').all(limit);
+  }
+
+  deleteSpeedTest(id) {
+    this.db.prepare('DELETE FROM speed_tests WHERE id = ?').run(id);
   }
 
   close() { this.db.close(); }

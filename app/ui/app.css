@@ -215,3 +215,51 @@ dialog::backdrop { background: oklch(0 0 0 / .5); }
   select { min-width: 0; max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Speed test */
+.speed-lens { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); margin-top: calc(-1 * var(--sp-2)); }
+#speedList:empty { display: none; }
+.speed-lens button { height: var(--control-h); padding: 0 12px; border-radius: var(--r-pill); border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-2); font: 500 var(--fs-sm) var(--font); cursor: pointer; }
+.speed-lens button:hover { color: var(--text); border-color: var(--text-3); }
+.speed-lens button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+#speedSetup > .setting:first-child { min-height: 0; padding-bottom: var(--sp-3); }
+#speedCustomRow { border-top: 1px solid var(--border); }
+.speed-custom input { width: 88px; }
+.speed-go { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4); border-top: 1px solid var(--border); }
+.speed-go .hint { max-width: 52ch; }
+.btn.big { height: 40px; padding: 0 22px; font-size: var(--fs-md); font-weight: 600; }
+
+.speed-run { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); }
+.speed-clock { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); }
+.speed-time-wrap { display: flex; align-items: baseline; gap: var(--sp-2); }
+.speed-time { font: 600 44px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.speed-time-label { color: var(--text-3); font-size: var(--fs-sm); }
+.speed-bar { width: 100%; height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.speed-bar span { display: block; height: 100%; width: 0; background: var(--accent-fill); transition: width .25s linear; }
+.speed-level { width: 120px; height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.speed-level span { display: block; height: 100%; background: var(--success); transform: scaleX(0); transform-origin: left; transition: transform 80ms linear; }
+.speed-heard { min-height: 3em; max-height: 6.2em; overflow: hidden; color: var(--text-2); font-size: var(--fs-sm); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.speed-heard:empty { display: none; }
+
+.speed-nums { display: grid; grid-template-columns: 1.3fr 1.3fr 1fr 1fr; margin: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg); }
+.speed-nums > div { padding: var(--sp-3) var(--sp-4); min-width: 0; }
+.speed-nums > div + div { border-left: 1px solid var(--border); }
+.speed-nums dt { font-size: var(--fs-xs); color: var(--text-3); }
+.speed-nums dd { margin: 2px 0 0; font: 600 20px var(--font-display); font-variant-numeric: tabular-nums; }
+.speed-nums .main dd { font-size: 30px; color: var(--accent); }
+
+.speed-result { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); border-color: var(--accent); }
+.speed-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.speed-result-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.speed-result-foot .link { align-self: center; }
+.speed-transcript { max-height: 240px; overflow-y: auto; padding: var(--sp-3); border-radius: var(--r-md); background: var(--bg); border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-sm); }
+.speed-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-5); }
+.speed-row b { font: 600 var(--fs-lg) var(--font-display); font-variant-numeric: tabular-nums; }
+.item-meta .tag.best { color: var(--accent); font-weight: 600; }
+
+@media (max-width: 900px) {
+  .speed-nums { grid-template-columns: repeat(2, 1fr); }
+  .speed-nums > div:nth-child(3) { border-left: 0; }
+  .speed-nums > div:nth-child(n+3) { border-top: 1px solid var(--border); }
+  .speed-go { flex-wrap: wrap; }
+}
