@@ -53,5 +53,5 @@ function fail(msg) { console.error(`release: ${msg}`); process.exit(1); }
   if (!out('git', ['tag', '--list', tag])) run('git', ['tag', tag]);
   run('git', ['push', 'origin', 'HEAD', tag]);
   run('gh', ['release', 'create', tag, '--repo', REPO, '--title', `JVoice ${version}`, '--notes-file', notes, '--verify-tag', ...files, sig]);
-  console.log(`release: ${tag} published. Installed copies update within a few hours, or at their next start.`);
+  console.log(`release: ${tag} published. Installed copies update within an hour, or at their next start.`);
 })().catch((err) => fail(err.message));
