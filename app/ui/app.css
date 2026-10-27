@@ -23,12 +23,8 @@ em { font-style: normal; color: var(--text-3); font-weight: 400; }
 .nav:hover { background: var(--surface-2); color: var(--text); }
 .nav[aria-current="page"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 8px; }
-.status { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-2); }
-.sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
-.status[data-state="recording"] .sdot { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
-.status[data-state="processing"] .sdot { background: var(--accent); }
-.status[data-state="paused"] .sdot, .status[data-state="nokey"] .sdot { background: var(--warn); }
-.status[data-state="broken"] .sdot { background: var(--danger); }
+.status { font-size: var(--fs-sm); color: var(--text-2); }
+.status[data-state="broken"] { color: var(--danger); }
 .ver { font-size: var(--fs-xs); color: var(--text-3); }
 
 main { overflow-y: auto; scrollbar-gutter: stable; }
@@ -191,7 +187,6 @@ dialog::backdrop { background: oklch(0 0 0 / .5); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.err { border-color: var(--danger); }
 
-@keyframes pulse { 50% { opacity: .35; } }
 
 @media (max-width: 900px) {
   .page { padding: var(--sp-6) var(--sp-5) 40px; }

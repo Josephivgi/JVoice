@@ -127,16 +127,15 @@ api.on('nav', go);
 // ---------- status ----------
 let status = { state: 'idle', paused: false, hookOk: true };
 function renderStatus() {
+  // Only problems are shown here. When everything works the line is empty.
   const s = $('status');
-  let state = status.state, text = 'Ready';
+  let state = '', text = '';
   if (!status.hookOk) { state = 'broken'; text = 'Shortcut not working'; }
   else if (settings && !settings.hasKey) { state = 'nokey'; text = 'Needs an OpenRouter key'; }
-  else if (status.state === 'recording') text = 'Listening';
-  else if (status.state === 'processing') text = 'Working';
-  else if (status.speedTest) { state = 'recording'; text = 'Speed test running'; }
   else if (status.paused) { state = 'paused'; text = 'Shortcut paused'; }
   s.dataset.state = state;
-  $('statusText').textContent = text;
+  s.textContent = text;
+  s.hidden = !text;
   $('heroKeys').classList.toggle('live', status.state === 'recording');
 }
 api.on('status', (s) => { status = s; renderStatus(); renderIssue(); });
