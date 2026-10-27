@@ -768,13 +768,15 @@ async function runShots(dir) {
           }
           if (process.env.JVOICE_SHOTS_UPDATE) {
             // Presses Check for updates against the real GitHub feed, as a dev copy of the given version.
+            // The wide window presses the sidebar button, the narrow one the button in Settings.
             updater = new Updater({ app: { isPackaged: false, getVersion: () => process.env.JVOICE_SHOTS_UPDATE }, isBusy: () => false, fetch: (url) => net.fetch(url) });
             updater.on('state', (st) => win.webContents.send('update', st));
             win.webContents.send('update', updater.state);
-            await win.webContents.executeJavaScript(`document.getElementById('updAction').click()`);
+            const which = w === 980 ? 'sideUpdate' : 'updAction';
+            await win.webContents.executeJavaScript(`document.getElementById('${which}').click()`);
             for (let i = 0; i < 50 && ['dev', 'checking'].includes(updater.state.status); i++) await new Promise((r) => setTimeout(r, 200));
-            const shown = await win.webContents.executeJavaScript(`[document.getElementById('updStatus').textContent, document.getElementById('updAction').textContent]`);
-            process.stdout.write(`update: ${JSON.stringify({ status: updater.state.status, next: updater.state.next, shown })}\n`);
+            const shown = await win.webContents.executeJavaScript(`[document.getElementById('updStatus').textContent, document.getElementById('updAction').textContent, document.getElementById('sideUpdateText').textContent]`);
+            process.stdout.write(`update: ${JSON.stringify({ clicked: which, status: updater.state.status, next: updater.state.next, shown })}\n`);
             await win.webContents.executeJavaScript(`document.getElementById('g-upd').scrollIntoView()`);
             await shot(win, `${theme}-${w}-${page}-updates`);
           }

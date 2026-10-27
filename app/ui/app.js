@@ -115,7 +115,7 @@ function go(page) {
   if (page === 'speed') loadSpeed();
   if (page !== 'settings') stopMicTest();
 }
-document.querySelectorAll('.nav').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
+document.querySelectorAll('.nav[data-page]').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
 document.addEventListener('click', (e) => {
   const href = e.target.closest('[data-href]')?.dataset.href;
   if (href) api.invoke('open:external', href).catch((err) => toast(err.message, true));
@@ -1044,12 +1044,29 @@ function renderUpdate() {
   $('updNotes').hidden = !lines.length;
   $('updNotesTitle').textContent = coming ? `Coming in version ${s.next}` : `What's new in version ${s.justUpdated?.version}`;
   $('updNotesList').replaceChildren(...lines.map((l) => el('li', {}, l)));
+  // The sidebar button says the same thing in a few words; the full text is its tooltip.
+  const side = $('sideUpdate');
+  $('sideUpdateText').textContent = {
+    checking: 'Checking…',
+    current: 'Up to date',
+    available: `Download ${s.next}`,
+    downloading: `Downloading ${s.percent || 0}%`,
+    verifying: 'Checking update…',
+    ready: 'Restart to update',
+    restarting: 'Restarting…',
+    error: 'Update check failed',
+  }[s.status] ?? 'Check for updates';
+  side.title = text;
+  side.disabled = btn.disabled;
+  side.classList.toggle('attention', s.status === 'ready' || s.status === 'available');
 }
-$('updAction').addEventListener('click', () => {
+function updateAction() {
   if (update.status === 'ready' || update.status === 'restarting') api.invoke('update:restart');
   else if (update.status === 'available') api.invoke('open:external', update.url).catch((err) => toast(err.message, true));
   else api.invoke('update:check').catch((err) => toast(err.message, true));
-});
+}
+$('updAction').addEventListener('click', updateAction);
+$('sideUpdate').addEventListener('click', updateAction);
 api.on('update', (s) => { update = s; renderUpdate(); });
 
 // ---------- boot ----------

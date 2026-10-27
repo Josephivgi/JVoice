@@ -22,6 +22,9 @@ em { font-style: normal; color: var(--text-3); font-weight: 400; }
 .nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .nav:hover { background: var(--surface-2); color: var(--text); }
 .nav[aria-current="page"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.nav:disabled { cursor: default; }
+.nav:disabled:hover { background: none; color: var(--text-2); }
+#sideUpdate.attention { color: var(--accent); font-weight: 600; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 8px; }
 .status { font-size: var(--fs-sm); color: var(--text-2); }
 .status[data-state="broken"] { color: var(--danger); }
