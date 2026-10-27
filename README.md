@@ -68,6 +68,7 @@ Test modes (no window is shown):
 - `electron . --transcribe file.wav` runs the full pipeline on a 16 kHz mono WAV with the saved key and prints the result.
 - `electron . --speed-test file.wav <length> <stopAfterMs> <dir>` runs the Speed test page offscreen with the WAV as the microphone and the saved key, prints the result, screenshots each stage into `<dir>`, then deletes the saved result. Length is 30, 60, ... 3600, 0 for no limit, or `custom2` for 2 minutes. A stopAfterMs above 0 presses Stop after that long.
 - `electron . --shots <dir>` renders every page and overlay state offscreen to PNGs.
+- `JVOICE_SHOTS_UPDATE=<version>` with `--shots` also presses Check for updates against the real GitHub feed, as a dev copy of that version, and prints what it showed.
 - `JVOICE_USER_DATA=<dir>` uses a separate data folder.
 
 Built with Electron, `uiohook-napi` for the global shortcut, `koffi` for Win32 calls, and `node:sqlite`.

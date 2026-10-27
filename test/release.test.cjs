@@ -72,3 +72,27 @@ test('release notes from GitHub become plain lines', () => {
   assert.equal(notesToText(html), 'New\n- Settings > Model lists DeepSeek & more.\n- Two');
   assert.equal(notesToText(null), '');
 });
+
+test('version compare orders releases by number, not by text', () => {
+  const { compareVersions } = require('../app/updater.cjs');
+  assert.equal(compareVersions('0.3.0', '0.2.0'), 1);
+  assert.equal(compareVersions('0.2.0', '0.10.0'), -1);
+  assert.equal(compareVersions('1.0', '1.0.0'), 0);
+});
+
+test('a dev copy checks the latest release and links to it, never installs', async () => {
+  const { Updater } = require('../app/updater.cjs');
+  const app = { isPackaged: false, getVersion: () => '0.2.0' };
+  const yml = (v) => async () => ({ ok: true, text: async () => `version: ${v}\nfiles: []\n` });
+  const u = new Updater({ app, isBusy: () => false, fetch: yml('0.3.0'), log: { error() {} } });
+  assert.equal(u.state.status, 'dev');
+  u.start();
+  assert.equal(u.autoUpdater, null);
+  assert.deepEqual([(await u.check()).status, u.state.next], ['available', '0.3.0']);
+  assert.match(u.state.url, /^https:\/\/github\.com\/Josephivgi\/JVoice\/releases\/latest$/);
+  u.fetch = yml('0.2.0');
+  assert.equal((await u.check()).status, 'current');
+  u.fetch = async () => ({ ok: false, status: 404 });
+  assert.equal((await u.check()).status, 'error');
+  assert.equal(u.state.error, 'No published release was found yet.');
+});

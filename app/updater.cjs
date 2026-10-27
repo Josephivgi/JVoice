@@ -17,6 +17,14 @@ MCowBQYDK2VwAyEALfw9NCfPLMw5SCaUzy1428A7ofpD6RQahKcDakSQEdE=
 const CHECK_EVERY_MS = 60 * 60 * 1000;
 const FIRST_CHECK_DELAY_MS = 15 * 1000;
 const RESTART_COUNTDOWN_MS = 5 * 1000;
+const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases/latest`;
+
+// -1, 0 or 1 for dotted version numbers like 0.10.2.
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0), pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  return 0;
+}
 
 // The signed text: product, version, installer file name and its sha512. Shared with scripts/release.cjs.
 const signedMessage = ({ version, file, sha512 }) => Buffer.from(`JVoice update\n${version}\n${file}\n${sha512}\n`, 'utf8');
@@ -117,9 +125,27 @@ class Updater extends EventEmitter {
   }
 
   async check() {
-    if (!this.autoUpdater) return this.state;
+    if (!this.autoUpdater) return this.checkOnly();
     if (['checking', 'downloading', 'verifying', 'ready', 'restarting'].includes(this.state.status)) return this.state;
     try { await this.autoUpdater.checkForUpdates(); } catch (err) { this.setState({ status: 'error', error: friendly(err) }); }
+    return this.state;
+  }
+
+  // A dev copy cannot install over itself, so it only looks up the newest release and links to it.
+  async checkOnly() {
+    if (this.state.status === 'checking') return this.state;
+    this.setState({ status: 'checking', error: '' });
+    try {
+      const res = await this.fetch(`${RELEASES_URL}/download/latest.yml`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const next = /^version:\s*['"]?([\d.]+)/m.exec(await res.text())?.[1];
+      if (!next) throw new Error('no version in latest.yml');
+      if (compareVersions(next, this.state.version) > 0) this.setState({ status: 'available', next, url: RELEASES_URL, checkedAt: Date.now() });
+      else this.setState({ status: 'current', checkedAt: Date.now() });
+    } catch (err) {
+      this.log.error('update check failed', err?.message);
+      this.setState({ status: 'error', error: friendly(err) });
+    }
     return this.state;
   }
 
@@ -158,4 +184,4 @@ function friendly(err) {
   return 'The update check failed. JVoice will try again later.';
 }
 
-module.exports = { notesToText, Updater, verifySignature, signedMessage, sha512File, RELEASE_KEY };
+module.exports = { compareVersions, notesToText, Updater, verifySignature, signedMessage, sha512File, RELEASE_KEY };

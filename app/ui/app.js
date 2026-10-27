@@ -1021,10 +1021,11 @@ function renderUpdate() {
   const s = update;
   $('updVersion').textContent = `Version ${s.version || ''}`.trim();
   const text = {
-    dev: 'Updates work in the installed app.',
+    dev: 'This is a development copy. It can check for new releases but only the installed app updates itself.',
     idle: '',
     checking: 'Checking for updates…',
     current: 'JVoice is up to date.',
+    available: `Version ${s.next} is out. This copy cannot update itself, so download the installer from GitHub.`,
     downloading: `Downloading version ${s.next}… ${s.percent || 0}%`,
     verifying: 'Checking that the update comes from JVoice…',
     ready: `Version ${s.next} is ready. JVoice restarts when you finish dictating.`,
@@ -1033,10 +1034,9 @@ function renderUpdate() {
   }[s.status] ?? '';
   $('updStatus').textContent = text;
   const btn = $('updAction');
-  btn.hidden = s.status === 'dev';
-  btn.textContent = s.status === 'ready' || s.status === 'restarting' ? 'Restart now' : 'Check for updates';
+  btn.textContent = s.status === 'ready' || s.status === 'restarting' ? 'Restart now' : s.status === 'available' ? 'Download' : 'Check for updates';
   btn.disabled = ['checking', 'downloading'].includes(s.status);
-  btn.classList.toggle('primary', s.status === 'ready');
+  btn.classList.toggle('primary', s.status === 'ready' || s.status === 'available');
   // Notes of the version on its way, or of the one just installed.
   const coming = ['downloading', 'verifying', 'ready', 'restarting'].includes(s.status) && s.notes;
   const notes = coming ? s.notes : s.justUpdated?.notes;
@@ -1047,6 +1047,7 @@ function renderUpdate() {
 }
 $('updAction').addEventListener('click', () => {
   if (update.status === 'ready' || update.status === 'restarting') api.invoke('update:restart');
+  else if (update.status === 'available') api.invoke('open:external', update.url).catch((err) => toast(err.message, true));
   else api.invoke('update:check').catch((err) => toast(err.message, true));
 });
 api.on('update', (s) => { update = s; renderUpdate(); });

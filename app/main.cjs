@@ -199,8 +199,8 @@ function buildTrayMenu() {
     { type: 'separator' },
     { label: 'Pause shortcut', type: 'checkbox', checked: hotkey.paused, click: (i) => { hotkey.paused = i.checked; buildTrayMenu(); broadcastStatus(); } },
     { label: 'History', click: () => showMain('history') },
-    ...(app.isPackaged ? [{ label: updater?.state.status === 'ready' ? `Restart to update to ${updater.state.next}` : 'Check for updates',
-      click: () => (updater?.state.status === 'ready' ? updater.restartNow() : (updater?.check(), showMain('settings'))) }] : []),
+    { label: updater?.state.status === 'ready' ? `Restart to update to ${updater.state.next}` : 'Check for updates',
+      click: () => (updater?.state.status === 'ready' ? updater.restartNow() : (updater?.check(), showMain('settings'))) },
     { label: 'Settings', click: () => showMain('settings') },
     { type: 'separator' },
     { label: 'Quit JVoice', click: () => { app.isQuitting = true; app.quit(); } },
@@ -765,6 +765,18 @@ async function runShots(dir) {
             await new Promise((r) => setTimeout(r, 1200));
             const shown = await win.webContents.executeJavaScript(`document.getElementById('customSaved').textContent`);
             process.stdout.write(`typed: saved=${JSON.stringify(store.getSettings().aiCustomPrompt)} status=${JSON.stringify(shown)}\n`);
+          }
+          if (process.env.JVOICE_SHOTS_UPDATE) {
+            // Presses Check for updates against the real GitHub feed, as a dev copy of the given version.
+            updater = new Updater({ app: { isPackaged: false, getVersion: () => process.env.JVOICE_SHOTS_UPDATE }, isBusy: () => false, fetch: (url) => net.fetch(url) });
+            updater.on('state', (st) => win.webContents.send('update', st));
+            win.webContents.send('update', updater.state);
+            await win.webContents.executeJavaScript(`document.getElementById('updAction').click()`);
+            for (let i = 0; i < 50 && ['dev', 'checking'].includes(updater.state.status); i++) await new Promise((r) => setTimeout(r, 200));
+            const shown = await win.webContents.executeJavaScript(`[document.getElementById('updStatus').textContent, document.getElementById('updAction').textContent]`);
+            process.stdout.write(`update: ${JSON.stringify({ status: updater.state.status, next: updater.state.next, shown })}\n`);
+            await win.webContents.executeJavaScript(`document.getElementById('g-upd').scrollIntoView()`);
+            await shot(win, `${theme}-${w}-${page}-updates`);
           }
           for (const y of [700, 1400]) {
             await win.webContents.executeJavaScript(`document.getElementById('main').scrollTop = ${y}`);
