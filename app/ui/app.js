@@ -1023,7 +1023,8 @@ function renderUpdate() {
     dev: 'This is a development copy. It can check for new releases but only the installed app updates itself.',
     idle: '',
     checking: 'Checking for updates…',
-    current: 'JVoice is up to date.',
+    // Says what GitHub reported and when, so a repeat check visibly happened.
+    current: `JVoice is up to date.${s.latest ? ` The newest release is ${s.latest}.` : ''} Checked at ${new Date(s.checkedAt || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`,
     available: `Version ${s.next} is out. This copy cannot update itself, so download the installer from GitHub.`,
     downloading: `Downloading version ${s.next}… ${s.percent || 0}%`,
     verifying: 'Checking that the update comes from JVoice…',

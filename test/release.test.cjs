@@ -92,6 +92,7 @@ test('a dev copy checks the latest release and links to it, never installs', asy
   assert.match(u.state.url, /^https:\/\/github\.com\/Josephivgi\/JVoice\/releases\/latest$/);
   u.fetch = yml('0.2.0');
   assert.equal((await u.check()).status, 'current');
+  assert.equal(u.state.latest, '0.2.0');
   u.fetch = async () => ({ ok: false, status: 404 });
   assert.equal((await u.check()).status, 'error');
   assert.equal(u.state.error, 'No published release was found yet.');

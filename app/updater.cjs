@@ -90,7 +90,7 @@ class Updater extends EventEmitter {
     autoUpdater.logger = null;
 
     autoUpdater.on('checking-for-update', () => this.setState({ status: 'checking', error: '' }));
-    autoUpdater.on('update-not-available', () => this.setState({ status: 'current', checkedAt: Date.now() }));
+    autoUpdater.on('update-not-available', (info) => this.setState({ status: 'current', latest: info?.version || '', checkedAt: Date.now() }));
     autoUpdater.on('update-available', (info) => this.setState({ status: 'downloading', next: info.version, percent: 0, notes: notesToText(info.releaseNotes) }));
     autoUpdater.on('download-progress', (p) => this.setState({ status: 'downloading', percent: Math.round(p.percent) }));
     autoUpdater.on('update-downloaded', (info) => this.onDownloaded(info));
@@ -141,7 +141,7 @@ class Updater extends EventEmitter {
       const next = /^version:\s*['"]?([\d.]+)/m.exec(await res.text())?.[1];
       if (!next) throw new Error('no version in latest.yml');
       if (compareVersions(next, this.state.version) > 0) this.setState({ status: 'available', next, url: RELEASES_URL, checkedAt: Date.now() });
-      else this.setState({ status: 'current', checkedAt: Date.now() });
+      else this.setState({ status: 'current', latest: next, checkedAt: Date.now() });
     } catch (err) {
       this.log.error('update check failed', err?.message);
       this.setState({ status: 'error', error: friendly(err) });
