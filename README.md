@@ -6,6 +6,12 @@ Hold a shortcut, talk, let go. JVoice turns your speech into text and types it w
 - Optional AI cleanup through any OpenRouter chat model (default DeepSeek V4.1 Flash): removes um and uh, applies "no wait" corrections, adds punctuation. Or pick Rewrite, and the AI rewrites what you said into clear, polished text.
 - One key for everything: you only need an OpenRouter key.
 
+## Download
+
+Get the installer from the [latest release](https://github.com/Josephivgi/JVoice/releases/latest): download `JVoice-Setup-<version>.exe` and run it. The installer is not code signed, so Windows SmartScreen may warn you. Choose **More info**, then **Run anyway**.
+
+JVoice updates itself from this repo's GitHub Releases. It checks at start, every hour, and when your computer wakes, downloads a new version in the background, checks its signature, and restarts into it when you are not dictating.
+
 ## Use it
 
 1. Start JVoice and paste your OpenRouter key (`sk-or-...`). Get one at https://openrouter.ai/settings/keys.
@@ -48,6 +54,14 @@ npm test           # unit tests
 npm run smoke      # hidden self-check: database, keyboard hook, Win32, pages
 npm run dist       # build the Windows installer into dist/
 ```
+
+### Publish a release
+
+1. Bump `version` in `package.json` and commit.
+2. Write the changelog for users in `release-notes/v<version>.md`. Lines starting with `- ` show in the app's update notes.
+3. Run `npm run release`. It runs the tests, builds the installer, signs it with the Ed25519 key in `~/.jvoice/release-signing-key.pem`, pushes the tag, and creates the GitHub release with the installer, `latest.yml`, the blockmap and the `.sig` file.
+
+Installed copies only install an update whose `.sig` matches the public key built into `app/updater.cjs`, so keep the signing key backed up.
 
 Test modes (no window is shown):
 
