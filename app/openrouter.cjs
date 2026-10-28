@@ -141,6 +141,17 @@ async function improve({ key, model, text, style, customPrompt = '', terms = [],
   return { text: out, cost: Number(json?.usage?.cost) || 0 };
 }
 
+// One turn of a tool-calling chat (Agent mode). Returns the assistant message and what it cost.
+async function chat({ key, model, messages, tools, signal, timeoutMs = 120000 }) {
+  const json = await request('/chat/completions', {
+    key, method: 'POST', timeoutMs, signal,
+    body: { model, messages, tools, tool_choice: 'auto', parallel_tool_calls: false, temperature: 0.2, max_tokens: 4096 },
+  });
+  const message = json?.choices?.[0]?.message;
+  if (!message) throw new ApiError('The AI sent an empty reply.', 0);
+  return { message, cost: Number(json?.usage?.cost) || 0 };
+}
+
 async function keyInfo(key) {
   const json = await request('/key', { key, timeoutMs: 15000 });
   const d = json?.data ?? {};
@@ -223,4 +234,4 @@ function countWords(text) {
   return m ? m.length : 0;
 }
 
-module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };
+module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, chat, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

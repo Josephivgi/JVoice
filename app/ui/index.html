@@ -60,6 +60,10 @@
 
         <div class="home-ready" id="homeReady">
         <div class="hero">
+          <div class="seg hero-mode" role="radiogroup" aria-label="Mode" id="homeMode" hidden>
+            <button role="radio" data-appmode="voice" type="button">Voice</button>
+            <button role="radio" data-appmode="agent" type="button">Agent (beta)</button>
+          </div>
           <div class="hero-keys" id="heroKeys"></div>
           <h1 id="heroTitle">Hold the keys and talk</h1>
           <p class="muted" id="heroSub">Let go and the text is typed wherever your cursor is.</p>
@@ -230,6 +234,34 @@
             </form>
           </div>
           <p class="hint">The key is encrypted with your Windows account and stays on this computer.</p>
+        </section>
+
+        <section class="group" aria-labelledby="g-mode" id="modeGroup" hidden>
+          <h2 id="g-mode">Mode</h2>
+          <div class="card">
+            <div class="setting">
+              <div class="setting-text"><b>When you talk</b><span class="muted" id="modeHelp"></span></div>
+              <div class="seg" role="radiogroup" aria-label="Mode">
+                <button role="radio" data-appmode="voice" type="button">Voice</button>
+                <button role="radio" data-appmode="agent" type="button">Agent (beta)</button>
+              </div>
+            </div>
+            <div class="ai-body" id="agentBody">
+              <div class="setting flush">
+                <div class="setting-text"><b>Agent model</b><span class="muted">Needs a model that can see screenshots and use tools.</span></div>
+                <select id="agentModel" aria-label="Agent model"></select>
+              </div>
+              <div class="setting flush">
+                <div class="setting-text"><b>PowerShell commands</b><span class="muted" id="cmdHelp"></span></div>
+                <div class="seg" role="radiogroup" aria-label="PowerShell commands">
+                  <button role="radio" data-cmds="ask" type="button">Ask me first</button>
+                  <button role="radio" data-cmds="allow" type="button">Always allow</button>
+                  <button role="radio" data-cmds="off" type="button">Off</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="hint">Agent mode is a beta. It sees your screen and clicks and types for you, so watch it work. Press Esc to stop it at any time.</p>
         </section>
 
         <section class="group" aria-labelledby="g-hotkey">

@@ -9,6 +9,8 @@ const GetForegroundWindow = user32.func('void* __stdcall GetForegroundWindow()')
 const GetClassNameW = user32.func('int __stdcall GetClassNameW(void*, _Out_ uint16*, int)');
 const GetWindowThreadProcessId = user32.func('uint32 __stdcall GetWindowThreadProcessId(void*, _Out_ uint32*)');
 const GetAsyncKeyState = user32.func('short __stdcall GetAsyncKeyState(int)');
+const GetWindowTextW = user32.func('int __stdcall GetWindowTextW(void*, _Out_ uint16*, int)');
+const SetCursorPos = user32.func('int __stdcall SetCursorPos(int, int)');
 const KEYBDINPUT = koffi.struct('KEYBDINPUT', { wVk: 'uint16', wScan: 'uint16', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
 const MOUSEINPUT = koffi.struct('MOUSEINPUT', { dx: 'int32', dy: 'int32', mouseData: 'uint32', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
 const INPUT = koffi.struct('INPUT', { type: 'uint32', u: koffi.union('INPUT_U', { mi: MOUSEINPUT, ki: KEYBDINPUT }) });
@@ -76,16 +78,67 @@ function foregroundWindow() {
   return { id: String(koffi.address(h)), pid: pid[0], exe, cls: n > 0 ? String.fromCharCode(...buf.subarray(0, n)) : '' };
 }
 
+// Title of the window the user is in, for Agent mode.
+function windowTitle() {
+  const h = GetForegroundWindow();
+  if (!h) return '';
+  const buf = new Uint16Array(512);
+  const n = GetWindowTextW(h, buf, buf.length);
+  return n > 0 ? String.fromCharCode(...buf.subarray(0, n)) : '';
+}
+
 const isKeyDown = (vk) => (GetAsyncKeyState(vk) & 0x8000) !== 0;
 
-// Sends key presses in one SendInput call. keys: [{ vk, up }]. Returns how many Windows accepted.
-const KEYEVENTF_KEYUP = 0x2;
+// Sends key presses in one SendInput call. keys: [{ vk, up, ext }]. ext marks extended keys (arrows,
+// Home, Delete, ...), which would otherwise be read as the number pad. Returns how many Windows accepted.
+const KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
 function sendKeys(keys) {
-  const inputs = keys.map(({ vk, up }) => ({
+  const inputs = keys.map(({ vk, up, ext }) => ({
     type: 1, // INPUT_KEYBOARD
-    u: { ki: { wVk: vk, wScan: MapVirtualKeyW(vk, 0), dwFlags: up ? KEYEVENTF_KEYUP : 0, time: 0, dwExtraInfo: 0 } },
+    u: { ki: { wVk: vk, wScan: MapVirtualKeyW(vk, 0), dwFlags: (up ? KEYEVENTF_KEYUP : 0) | (ext ? KEYEVENTF_EXTENDEDKEY : 0), time: 0, dwExtraInfo: 0 } },
   }));
   return SendInput(inputs.length, inputs, koffi.sizeof(INPUT));
+}
+
+// Types text as Unicode key events, so it works whatever the keyboard layout is. New lines are Enter.
+function typeText(text) {
+  const inputs = [];
+  const key = (vk, up) => ({ type: 1, u: { ki: { wVk: vk, wScan: MapVirtualKeyW(vk, 0), dwFlags: up ? KEYEVENTF_KEYUP : 0, time: 0, dwExtraInfo: 0 } } });
+  const unit = (c, up) => ({ type: 1, u: { ki: { wVk: 0, wScan: c, dwFlags: KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0), time: 0, dwExtraInfo: 0 } } });
+  for (const ch of String(text).replace(/\r\n?/g, '\n')) {
+    if (ch === '\n') { inputs.push(key(0x0D, false), key(0x0D, true)); continue; }
+    for (let i = 0; i < ch.length; i++) { const c = ch.charCodeAt(i); inputs.push(unit(c, false), unit(c, true)); }
+  }
+  let sent = 0;
+  // Small batches, so a long text does not flood the input queue of the app receiving it.
+  for (let i = 0; i < inputs.length; i += 200) {
+    const part = inputs.slice(i, i + 200);
+    sent += SendInput(part.length, part, koffi.sizeof(INPUT));
+  }
+  return sent;
+}
+
+// Mouse at a physical screen point. button: left | right | middle; clicks: 1 or 2.
+const MOUSE_FLAGS = { left: [0x2, 0x4], right: [0x8, 0x10], middle: [0x20, 0x40] };
+function mouseInput(dwFlags, mouseData = 0) {
+  return { type: 0, u: { mi: { dx: 0, dy: 0, mouseData, dwFlags, time: 0, dwExtraInfo: 0 } } };
+}
+function moveMouse(x, y) { return !!SetCursorPos(Math.round(x), Math.round(y)); }
+function click(x, y, button = 'left', clicks = 1) {
+  if (!moveMouse(x, y)) return false;
+  const [down, up] = MOUSE_FLAGS[button] || MOUSE_FLAGS.left;
+  const inputs = [];
+  for (let i = 0; i < Math.min(3, Math.max(1, clicks)); i++) inputs.push(mouseInput(down), mouseInput(up));
+  return SendInput(inputs.length, inputs, koffi.sizeof(INPUT)) === inputs.length;
+}
+// Wheel notches at a point. Positive dy scrolls down, positive dx scrolls right.
+function scroll(x, y, dy = 0, dx = 0) {
+  if (!moveMouse(x, y)) return false;
+  const inputs = [];
+  // mouseData is a DWORD; a negative wheel delta is passed as its two's complement.
+  if (dy) inputs.push(mouseInput(0x0800, (-Math.round(dy) * 120) >>> 0));
+  if (dx) inputs.push(mouseInput(0x1000, (Math.round(dx) * 120) >>> 0));
+  return !inputs.length || SendInput(inputs.length, inputs, koffi.sizeof(INPUT)) === inputs.length;
 }
 
 // owner: HWND as a BigInt. Restoring needs a real owner window, or SetClipboardData fails after EmptyClipboard.
@@ -203,4 +256,4 @@ const clipboardSequence = () => GetClipboardSequenceNumber();
 // BrowserWindow.getNativeWindowHandle() returns the HWND bytes.
 const hwndOf = (buf) => (buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0)));
 
-module.exports = { foregroundWindow, isKeyDown, sendKeys, snapshotClipboard, restoreClipboard, setClipboardText, clipboardSequence, hwndOf };
+module.exports = { foregroundWindow, windowTitle, isKeyDown, sendKeys, typeText, moveMouse, click, scroll, snapshotClipboard, restoreClipboard, setClipboardText, clipboardSequence, hwndOf };

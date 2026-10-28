@@ -54,7 +54,7 @@ async function beep(kind, on) {
 function fmt(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 
 const STYLE = { clean: 'Light cleanup', rewrite: 'Rewrite' };
-const SPOKEN = { recording: 'Recording', transcribing: 'Transcribing', improving: 'Improving text', cancelled: 'Cancelled', updating: 'Updating JVoice. It will restart in a moment.' };
+const SPOKEN = { agent: 'Agent working', recording: 'Recording', transcribing: 'Transcribing', improving: 'Improving text', cancelled: 'Cancelled', updating: 'Updating JVoice. It will restart in a moment.' };
 function render(state, data = {}) {
   pill.dataset.state = state;
   sub.textContent = '';
@@ -71,13 +71,19 @@ function render(state, data = {}) {
       sub.textContent = data.note || ran;
       break;
     }
+    case 'agent': label.textContent = data.label || 'Working'; sub.textContent = data.sub || ''; break;
+    case 'agentdone':
+      pill.dataset.result = data.success ? 'ok' : 'bad';
+      label.textContent = data.success ? 'Agent done' : 'Agent stopped';
+      sub.textContent = data.summary || '';
+      break;
     case 'error': label.textContent = data.message || 'Something went wrong.'; break;
     case 'cancelled': label.textContent = 'Cancelled'; break;
     case 'updating': label.textContent = 'Updating JVoice'; sub.textContent = data.version ? `Restarting into version ${data.version}` : 'Restarting in a moment'; break;
     default: break;
   }
   // One short announcement per state change for screen readers; the timer and waveform stay silent.
-  const said = state === 'done' || state === 'error' ? [label.textContent, sub.textContent].filter(Boolean).join('. ') : SPOKEN[state] || '';
+  const said = state === 'done' || state === 'error' || state === 'agentdone' ? [label.textContent, sub.textContent].filter(Boolean).join('. ') : SPOKEN[state] || '';
   if (said && live.textContent !== said) live.textContent = said;
   if (state === 'hidden') live.textContent = '';
 }

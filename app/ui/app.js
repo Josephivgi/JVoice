@@ -59,7 +59,7 @@ function when(ts) {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 const secs = (ms) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-const STYLE_NAMES = { clean: 'Light cleanup', rewrite: 'Rewrite', intent: 'Rewrite', custom: 'Rewrite', raw: 'No AI' };
+const STYLE_NAMES = { agent: 'Agent', clean: 'Light cleanup', rewrite: 'Rewrite', intent: 'Rewrite', custom: 'Rewrite', raw: 'No AI' };
 // Older rows kept the style name even when the AI failed; no model means no AI ran.
 const styleName = (row) => (row.style !== 'raw' && !row.ai_model ? 'No AI' : STYLE_NAMES[row.style] || row.style);
 const shortModel = (id) => String(id || '').split('/').pop();
@@ -162,8 +162,13 @@ function renderHero() {
   if (!settings) return;
   $('heroKeys').replaceChildren(keycaps(settings.hotkeyLabel));
   const hold = settings.hotkeyMode === 'hold';
-  $('heroTitle').textContent = hold ? 'Hold the keys and talk' : 'Press the keys and talk';
-  const out = settings.outputMode === 'paste' ? 'the text is typed wherever your cursor is' : 'the text is copied so you can paste it';
+  const agentOn = settings.mode === 'agent';
+  $('homeMode').hidden = !settings.beta;
+  setRadio('[data-appmode]', 'appmode', settings.mode);
+  $('heroTitle').textContent = agentOn ? (hold ? 'Hold the keys and say a task' : 'Press the keys and say a task')
+    : hold ? 'Hold the keys and talk' : 'Press the keys and talk';
+  const out = agentOn ? 'the agent does it on your computer. Esc stops it'
+    : settings.outputMode === 'paste' ? 'the text is typed wherever your cursor is' : 'the text is copied so you can paste it';
   $('heroSub').textContent = hold ? `Let go and ${out}.` : `Press them again and ${out}.`;
   $('setup').hidden = settings.hasKey;
   $('homeReady').hidden = !settings.hasKey;
@@ -610,7 +615,10 @@ function loadSpeed() {
 // ---------- history ----------
 function historyItem(row) {
   const failed = row.status === 'failed';
-  const text = failed ? null : el('div', { class: 'item-text' }, row.final);
+  const agentRow = row.style === 'agent';
+  const text = failed ? null : agentRow
+    ? el('div', { class: 'item-text' }, el('span', { class: 'muted' }, `You asked: ${row.raw}`), el('br'), row.final)
+    : el('div', { class: 'item-text' }, row.final);
   const actions = el('div', { class: 'item-actions' });
   if (failed) {
     actions.append(el('button', { class: 'btn sm', type: 'button', onclick: async (e) => {
@@ -623,7 +631,7 @@ function historyItem(row) {
     actions.append(el('button', { class: 'btn ghost icon sm', type: 'button', title: 'Copy', 'aria-label': 'Copy text', onclick: async () => {
       await api.invoke('clipboard:write', row.final); toast('Copied');
     } }, svg(ICONS.copy)));
-    if (row.raw && row.raw !== row.final) {
+    if (row.raw && row.raw !== row.final && !agentRow) {
       let shown = false;
       actions.prepend(el('button', { class: 'btn ghost sm', type: 'button', onclick: (e) => {
         shown = !shown;
@@ -641,14 +649,15 @@ function historyItem(row) {
     el('span', {}, when(row.created_at)),
     el('span', {}, '·'), el('span', {}, secs(row.duration_ms)),
     failed ? el('span', { class: 'tag failed' }, 'Failed') : el('span', { class: 'tag' }, styleName(row)),
-    !failed && row.ai_model && row.raw === row.final ? el('span', { class: 'tag' }, 'No changes needed') : null,
+    !failed && !agentRow && row.ai_model && row.raw === row.final ? el('span', { class: 'tag' }, 'No changes needed') : null,
+    agentRow && row.error ? el('span', { class: 'tag failed' }, 'Not finished') : null,
     !failed && row.ai_model ? el('span', {}, shortModel(row.ai_model)) : null,
     !failed && row.cut ? el('span', { class: 'tag' }, `Cut to ${row.cut}`) : null,
     !failed ? el('span', {}, `${row.words} words`) : null,
     actions);
   return el('li', { class: `item${failed ? ' failed' : ''}` }, meta,
     failed ? el('div', { class: 'item-err' }, row.error) : text,
-    !failed && row.error ? el('div', { class: 'item-warn' }, row.error) : null);
+    !failed && !agentRow && row.error ? el('div', { class: 'item-warn' }, row.error) : null);
 }
 
 function renderHistory(list, rows, emptyText) {
@@ -782,9 +791,30 @@ function radioKeys(group) {
 }
 document.querySelectorAll('[role="radiogroup"]').forEach(radioKeys);
 
+// Agent models: each can see screenshots and call tools on OpenRouter.
+const AGENT_MODELS = [
+  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5 (default)'],
+  ['anthropic/claude-opus-5.5', 'Claude Opus 5.5'],
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5 (cheapest)'],
+  ['google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
+  ['openai/gpt-5.6-terra', 'GPT-5.6 Terra'],
+];
 function renderSettings() {
   if (!settings) return;
   renderKey();
+  $('modeGroup').hidden = !settings.beta;
+  setRadio('[data-appmode]', 'appmode', settings.mode);
+  $('modeHelp').textContent = settings.mode === 'agent'
+    ? 'Agent: say a task, and the AI does it on your computer, or writes the text you asked for.'
+    : 'Voice: what you say is typed where your cursor is.';
+  $('agentBody').classList.toggle('off', settings.mode !== 'agent');
+  $('agentBody').toggleAttribute('inert', settings.mode !== 'agent');
+  const am = $('agentModel');
+  const list = AGENT_MODELS.some(([id]) => id === settings.agentModel) ? AGENT_MODELS : [...AGENT_MODELS, [settings.agentModel, settings.agentModel]];
+  am.replaceChildren(...list.map(([id, name]) => el('option', { value: id }, name)));
+  am.value = settings.agentModel;
+  setRadio('[data-cmds]', 'cmds', settings.agentCommands);
+  $('cmdHelp').textContent = { ask: 'JVoice shows each command and runs it only if you say yes.', allow: 'Commands run without asking. Only for tasks you trust.', off: 'The agent only uses the mouse and keyboard.' }[settings.agentCommands];
   $('hkKeys').replaceChildren(keycaps(settings.hotkeyLabel));
   setRadio('[data-mode]', 'mode', settings.hotkeyMode);
   $('hkHelp').textContent = settings.hotkeyMode === 'hold' ? 'Hold to record, let go to finish. Esc cancels.' : 'Press once to start, again to finish. Esc cancels.';
@@ -812,6 +842,12 @@ function renderSettings() {
 document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => save({ hotkeyMode: b.dataset.mode })));
 document.querySelectorAll('[data-style]').forEach((b) => b.addEventListener('click', () => save({ aiStyle: b.dataset.style })));
 document.querySelectorAll('[data-output]').forEach((b) => b.addEventListener('click', () => save({ outputMode: b.dataset.output })));
+document.querySelectorAll('[data-appmode]').forEach((b) => b.addEventListener('click', () => save({ mode: b.dataset.appmode })));
+document.querySelectorAll('[data-cmds]').forEach((b) => b.addEventListener('click', () => save({ agentCommands: b.dataset.cmds })));
+$('agentModel').addEventListener('change', (e) => save({ agentModel: e.target.value }));
+// The tray menu can switch the mode too.
+api.on('settings:changed', (s) => { settings = s; renderSettings(); renderHero(); });
+api.on('agent:done', () => { if (!$('page-home').hidden) loadHome(); });
 for (const id of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'keepHistory']) {
   $(id).addEventListener('change', (e) => save({ [id]: e.target.checked }));
 }

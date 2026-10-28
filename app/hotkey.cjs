@@ -69,6 +69,7 @@ class Hotkey extends EventEmitter {
     this.injected = []; // our own synthetic events still to arrive: { type, code, until }
     this.capture = null; // callback while the user records a new combo in Settings
     this.started = false;
+    this.muteUntil = 0; // Agent mode sends keys; until this time Esc is not read as the user cancelling
   }
 
   configure({ combo, mode }) {
@@ -136,7 +137,7 @@ class Hotkey extends EventEmitter {
     const n = norm(code);
     const held = this.held();
     if (this.capture) { this.capture('down', n, [...held]); return; }
-    if (n === K.Escape && this.recording) { this.emit('cancel'); return; }
+    if (n === K.Escape && this.recording) { if (Date.now() >= this.muteUntil) this.emit('cancel'); return; }
     if (this.paused) return;
 
     if (!this.active && this.comboHeld(held) && held.size === this.combo.length) {

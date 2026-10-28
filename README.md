@@ -30,6 +30,18 @@ JVoice runs in the tray. Closing the window keeps it running; quit from the tray
 - **Dictionary**: words JVoice should always spell your way, and what the speech engine writes instead.
 - **History**: every dictation, the raw transcript, and Retry for recordings that failed to transcribe.
 
+### Agent mode (beta)
+
+Only in dev copies and `-beta` builds. Switch between **Voice** and **Agent** on Home, in Settings > Mode, or from the tray menu. Voice is the default.
+
+In Agent mode you say a task instead of text. JVoice sends it with a screenshot to the agent model (Claude Sonnet 5.5 by default, through your OpenRouter key), which then:
+
+- writes text where your cursor was, when you asked for text ("reply to this saying I'll be there at 5"),
+- clicks, types, presses keys and scrolls to do things in your apps ("open Notepad and write a shopping list"),
+- runs PowerShell commands, hidden. By default JVoice shows each command and runs it only if you say yes. Settings > Mode can allow them always or turn them off.
+
+Press **Esc** to stop the agent. The pill shows each step. Runs are saved in History with what you asked and what happened.
+
 ### Speed test
 
 Open **Speed test**, pick a length (30 seconds up to 1 hour, a custom length up to 3 hours, or no limit), press **Start test** and talk. JVoice shows your words per minute and characters per minute while you talk, and the final result when the time is up or you press Stop.
@@ -67,6 +79,7 @@ Test modes (no window is shown):
 
 - `electron . --transcribe file.wav` runs the full pipeline on a 16 kHz mono WAV with the saved key and prints the result.
 - `electron . --speed-test file.wav <length> <stopAfterMs> <dir>` runs the Speed test page offscreen with the WAV as the microphone and the saved key, prints the result, screenshots each stage into `<dir>`, then deletes the saved result. Length is 30, 60, ... 3600, 0 for no limit, or `custom2` for 2 minutes. A stopAfterMs above 0 presses Stop after that long.
+- `electron . --agent <task.wav | "typed task">` runs Agent mode for real with the saved key and prints what it did. It controls the mouse and keyboard, so run it in a VM.
 - `electron . --shots <dir>` renders every page and overlay state offscreen to PNGs.
 - `JVOICE_SHOTS_UPDATE=<version>` with `--shots` also presses Check for updates against the real GitHub feed, as a dev copy of that version, and prints what it showed.
 - `JVOICE_USER_DATA=<dir>` uses a separate data folder.

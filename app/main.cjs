@@ -3,13 +3,15 @@ const path = require('node:path');
 const fs = require('node:fs');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, clipboard, nativeImage, screen,
-  safeStorage, shell, Notification, powerMonitor, session, net, protocol,
+  safeStorage, shell, Notification, powerMonitor, session, net, protocol, desktopCapturer, dialog,
 } = require('electron');
+const { execFile } = require('node:child_process');
 const { Store, DEFAULTS } = require('./db.cjs');
 const api = require('./openrouter.cjs');
 const speed = require('./speed.cjs');
 const { Hotkey, comboLabel, validateCombo, sortCombo } = require('./hotkey.cjs');
 const { Updater } = require('./updater.cjs');
+const agent = require('./agent.cjs');
 
 let win32 = null;
 try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpers unavailable', err.message); }
@@ -17,6 +19,8 @@ try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpe
 // Test modes read files, use the saved key or record the mic with no UI, so the installed app ignores
 // them. Only --smoke (a self check that prints yes/no results) works in every build.
 const DEV = !app.isPackaged;
+// Agent mode is a beta: it only exists in dev copies and in builds with a -beta version.
+const BETA = DEV || /-beta/i.test(app.getVersion());
 const devArg = (name) => (DEV ? process.argv.indexOf(name) : -1);
 const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -24,8 +28,9 @@ const TRANSCRIBE_ARG = devArg('--transcribe');
 const SHOTS_ARG = devArg('--shots');
 const RECORD_ARG = devArg('--record-test');
 const SPEED_ARG = devArg('--speed-test');
+const AGENT_ARG = devArg('--agent');
 const IMPORT_KEY = devArg('--import-key') > 0;
-const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || SPEED_ARG > 0 || IMPORT_KEY;
+const HEADLESS = SMOKE || TRANSCRIBE_ARG > 0 || SHOTS_ARG > 0 || RECORD_ARG > 0 || SPEED_ARG > 0 || AGENT_ARG > 0 || IMPORT_KEY;
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 const UI = path.join(__dirname, 'ui');
 const ASSETS = path.join(__dirname, '..', 'assets');
@@ -83,7 +88,7 @@ function publicSettings() {
   const s = store.getSettings();
   const key = getKey();
   delete s.apiKeyEnc;
-  return { ...s, hasKey: !!key, keyMasked: maskKey(key), hotkeyLabel: comboLabel(s.hotkey) };
+  return { ...s, mode: agentMode(s) ? 'agent' : 'voice', beta: BETA, hasKey: !!key, keyMasked: maskKey(key), hotkeyLabel: comboLabel(s.hotkey) };
 }
 
 // ---------- windows ----------
@@ -198,6 +203,10 @@ function buildTrayMenu() {
     { label: dictation.state === 'recording' ? 'Stop dictation' : 'Start dictation', click: () => dictation.toggle() },
     { type: 'separator' },
     { label: 'Pause shortcut', type: 'checkbox', checked: hotkey.paused, click: (i) => { hotkey.paused = i.checked; buildTrayMenu(); broadcastStatus(); } },
+    ...(BETA ? [
+      { label: 'Voice mode', type: 'radio', checked: !agentMode(), click: () => setMode('voice') },
+      { label: 'Agent mode (beta)', type: 'radio', checked: agentMode(), click: () => setMode('agent') },
+    ] : []),
     { label: 'History', click: () => showMain('history') },
     { label: updater?.state.status === 'ready' ? `Restart to update to ${updater.state.next}` : 'Check for updates',
       click: () => (updater?.state.status === 'ready' ? updater.restartNow() : (updater?.check(), showMain('settings'))) },
@@ -356,6 +365,11 @@ const dictation = {
       }
       // The IPC copy is already a fresh buffer, so wrap it instead of copying again.
       const wav = Buffer.from(rec.wav.buffer, rec.wav.byteOffset, rec.wav.byteLength);
+      if (agentMode()) {
+        await runAgentTask({ wav, ms: rec.ms, signal: ac.signal, target: this.target, current });
+        if (lastIssue && lastIssue.action !== 'history' && current()) reportIssue(null);
+        return;
+      }
       const result = await runPipeline({ wav, ms: rec.ms, signal: ac.signal, onStage: (st, data) => { if (current()) overlayState(st, data); } });
       if (ac.signal.aborted || !current()) return;
       if (!result.final) return fail('No speech detected.', 1800);
@@ -436,6 +450,115 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
     } else store.addHistory({ ...base, ...fields });
   }
   return { raw, final, words, cost, aiError, cut, style, changed: final !== raw };
+}
+
+// ---------- agent mode (beta) ----------
+// The spoken task is transcribed (no cleanup) and handed to agent.cjs, which sees the screen and acts.
+const agentMode = (s = store.getSettings()) => BETA && s.mode === 'agent';
+function setMode(mode) {
+  store.setSettings({ mode });
+  buildTrayMenu();
+  toMain('settings:changed', publicSettings());
+}
+
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(new Error('Cancelled.'));
+  const t = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, ms);
+  const stop = () => { clearTimeout(t); reject(new Error('Cancelled.')); };
+  signal?.addEventListener('abort', stop, { once: true });
+});
+
+// Screenshots are scaled down to about this size, which vision models read best.
+const SHOT_W = 1280, SHOT_H = 800;
+const OUTPUT_LIMIT = 6000;
+
+// The real computer for agent.cjs: the screen the cursor was on, the mouse and keyboard, PowerShell.
+function agentIo({ signal, target }) {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const title = win32 ? win32.windowTitle() : '';
+  let map = null; // screenshot pixels -> physical screen pixels
+  const toScreen = (x, y) => [map.x + (x + 0.5) * map.sx, map.y + (y + 0.5) * map.sy];
+  // Our own key presses must not read as the user pressing Esc to stop the agent.
+  const quiet = async (fn) => { hotkey.muteUntil = Date.now() + 5000; try { return fn(); } finally { hotkey.muteUntil = Date.now() + 400; } };
+  const need = () => { if (!win32) throw new Error('Mouse and keyboard control is not available.'); };
+  return {
+    window: () => ({ title, exe: target?.exe || '' }),
+    async screenshot() {
+      await sleep(400, signal); // let the screen finish drawing after the last action
+      const phys = screen.dipToScreenRect(null, display.bounds);
+      const scale = Math.min(1, SHOT_W / phys.width, SHOT_H / phys.height);
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: Math.round(phys.width * scale), height: Math.round(phys.height * scale) } });
+      const src = sources.find((x) => x.display_id === String(display.id)) || sources[0];
+      if (!src || src.thumbnail.isEmpty()) throw new Error('JVoice could not take a screenshot.');
+      const { width, height } = src.thumbnail.getSize();
+      map = { x: phys.x, y: phys.y, sx: phys.width / width, sy: phys.height / height };
+      return { width, height, dataUrl: `data:image/jpeg;base64,${src.thumbnail.toJPEG(80).toString('base64')}` };
+    },
+    click: (x, y, button, clicks) => { need(); return quiet(() => win32.click(...toScreen(x, y), button, clicks)); },
+    scroll: (x, y, dy, dx) => { need(); return quiet(() => win32.scroll(...toScreen(x, y), dy, dx)); },
+    typeText: (text) => { need(); return quiet(() => win32.typeText(api.sanitizeOutput(text))); },
+    keys: (keys) => { need(); return quiet(() => win32.sendKeys(keys)); },
+    wait: (ms) => sleep(ms, signal),
+    async run(command) {
+      if (store.getSettings().agentCommands === 'ask') {
+        const { response } = await dialog.showMessageBox({
+          type: 'question', title: 'JVoice Agent', buttons: ['Run it', 'Do not run'], defaultId: 1, cancelId: 1, noLink: true,
+          message: 'JVoice Agent wants to run this PowerShell command:', detail: command.slice(0, 2000),
+        });
+        if (signal.aborted) throw new Error('Cancelled.');
+        if (response !== 0) return 'The user did not allow this command. Do the task another way, or call done.';
+      }
+      return new Promise((resolve) => {
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+          { windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024, signal },
+          (err, stdout, stderr) => {
+            const out = `${stdout || ''}${stderr ? `\n[stderr]\n${stderr}` : ''}`.trim();
+            const code = err ? (err.killed ? 'timed out after 60 seconds' : `exit code ${err.code ?? 1}`) : 'exit code 0';
+            resolve(`${code}\n${out.length > OUTPUT_LIMIT ? `${out.slice(0, OUTPUT_LIMIT)}\n(output cut)` : out || '(no output)'}`);
+          });
+      });
+    },
+    async write(text) {
+      const out = await output(api.sanitizeOutput(text), { signal, target });
+      return out.pasted ? `Pasted into the user's window.${out.note ? ` ${out.note}` : ''}` : `Copied to the clipboard instead. ${out.note || ''}`.trim();
+    },
+  };
+}
+
+// text: a typed task for the --agent test mode, used instead of transcribing wav.
+async function runAgentTask({ wav, ms, signal, target, current, text = null }) {
+  const s = store.getSettings();
+  const key = getKey();
+  const t = text !== null ? { text, cost: 0 } : await api.transcribe({ key, model: s.sttModel, wav, language: s.language, signal });
+  const task = api.applyDictionary(api.stripSoundTags(t.text), store.listDictionary()).trim();
+  if (signal.aborted || !current()) return;
+  if (!task) { overlayState('error', { message: 'No speech detected.' }, 1800); return; }
+  const show = (label, step) => { if (current()) overlayState('agent', { label, sub: step ? `Step ${step + 1}. Esc stops.` : 'Esc stops.' }); };
+  // The pill stays out of the agent's screenshots, so it never covers what the agent needs to see.
+  const ov = overlayWin && !overlayWin.isDestroyed() ? overlayWin : null;
+  ov?.setContentProtection(true);
+  let r;
+  try {
+    r = await agent.runAgent({
+      chat: api.chat, key, model: s.agentModel, task, io: agentIo({ signal, target }), signal,
+      onStep: show, allowCommands: s.agentCommands !== 'off',
+    });
+  } catch (err) {
+    if (signal.aborted) return;
+    err.message = `Agent: ${err.message}`;
+    throw err;
+  } finally { ov?.setContentProtection(false); }
+  if (signal.aborted || !current()) return;
+  if (s.keepHistory) {
+    store.addHistory({
+      status: 'done', style: 'agent', raw: task, final: r.written || r.summary, error: r.success ? '' : r.summary,
+      stt_model: s.sttModel, ai_model: s.agentModel, duration_ms: ms, words: api.countWords(task), cost: t.cost + r.cost,
+    });
+    toMain('history:changed');
+  }
+  overlayState('agentdone', { success: r.success, summary: r.summary }, r.success ? 4000 : 6000);
+  toMain('agent:done', { task, ...r });
+  return { task, ...r };
 }
 
 // ---------- speed test ----------
@@ -599,9 +722,11 @@ function registerIpc() {
     if (clean.hotkeyMode && !['hold', 'toggle'].includes(clean.hotkeyMode)) delete clean.hotkeyMode;
     if (clean.aiStyle && !['clean', 'rewrite'].includes(clean.aiStyle)) delete clean.aiStyle;
     if (clean.outputMode && !['paste', 'copy'].includes(clean.outputMode)) delete clean.outputMode;
+    if ('mode' in clean && (!BETA || !['voice', 'agent'].includes(clean.mode))) delete clean.mode;
+    if (clean.agentCommands && !['ask', 'allow', 'off'].includes(clean.agentCommands)) delete clean.agentCommands;
     if ('charLimit' in clean && ![0, 128, 280, 500, 1024].includes(Number(clean.charLimit))) delete clean.charLimit;
     else if ('charLimit' in clean) clean.charLimit = Number(clean.charLimit);
-    for (const k of ['sttModel', 'aiModel']) {
+    for (const k of ['sttModel', 'aiModel', 'agentModel']) {
       if (!(k in clean)) continue;
       clean[k] = str(clean[k], 200).trim() || DEFAULTS[k];
       if (!MODEL_ID.test(clean[k])) throw new Error('That is not a valid model id.');
@@ -617,6 +742,7 @@ function registerIpc() {
     store.setSettings(clean);
     if ('launchAtLogin' in clean) applyLoginItem(!!clean.launchAtLogin);
     if (clean.hotkey || clean.hotkeyMode) applyHotkeySettings();
+    if ('mode' in clean) buildTrayMenu();
     return publicSettings();
   });
   handle('key:set', async (key) => {
@@ -796,6 +922,9 @@ async function runShots(dir) {
       ['done', `render('done',{words:42,pasted:true})`], ['copied', `render('done',{words:1,pasted:false})`],
       ['error', `render('error',{message:'Your OpenRouter account is out of credits.'})`],
       ['error-long', `render('error',{message:'Microphone access is blocked. Allow it in Windows privacy settings.'})`],
+      ['agent', `render('agent',{label:'Pressing Ctrl+L',sub:'Step 3. Esc stops.'})`],
+      ['agentdone', `render('agentdone',{success:true,summary:'Opened Notepad and wrote a short haiku about rain, then saved it to your Desktop.'})`],
+      ['agentstopped', `render('agentdone',{success:false,summary:'The site asks for a password, so I stopped.'})`],
     ];
     for (const [name, js] of states) { await ov.webContents.executeJavaScript(js); await shot(ov, `${theme}-overlay-${name}`); }
     ov.destroy();
@@ -889,6 +1018,27 @@ async function runSpeedTest(length, stopAfterMs, dir) {
   app.exit(shown.state === 'done' && saved && deleted && !errors.length ? 0 : 1);
 }
 
+// --agent <task.wav | "typed task">: runs Agent mode for real (speech, model, screen, mouse and keyboard)
+// with the saved key and settings, and prints what happened. Run it inside a VM: it controls the computer.
+async function runAgentFile(arg) {
+  try {
+    if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
+    const isWav = /\.wav$/i.test(arg) && fs.existsSync(arg);
+    const wav = isWav ? readWav(arg) : null;
+    const ac = new AbortController();
+    const started = Date.now();
+    const r = await runAgentTask({
+      wav, ms: wav ? Math.round(((wav.length - 44) / 32000) * 1000) : 0, signal: ac.signal,
+      target: win32 ? win32.foregroundWindow() : null, current: () => true, text: isWav ? null : arg,
+    });
+    process.stdout.write(JSON.stringify({ ...r, seconds: Math.round((Date.now() - started) / 1000) }, null, 2) + '\n');
+    app.exit(r?.success ? 0 : 1);
+  } catch (err) {
+    process.stderr.write(`ERROR: ${err.message}\n`);
+    app.exit(1);
+  }
+}
+
 async function runTranscribeFile(file) {
   try {
     if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
@@ -943,6 +1093,7 @@ app.whenReady().then(async () => {
       return app.exit(0);
     } catch (err) { process.stderr.write(`ERROR: ${err.message}\n`); return app.exit(1); }
   }
+  if (AGENT_ARG > 0) { createOverlay(); return runAgentFile(process.argv[AGENT_ARG + 1]); }
   if (SPEED_ARG > 0) return runSpeedTest(process.argv[SPEED_ARG + 2], Number(process.argv[SPEED_ARG + 3]) || 0, path.resolve(process.argv[SPEED_ARG + 4] || 'speed-shots'));
   if (RECORD_ARG > 0) return runRecordTest(Number(process.argv[RECORD_ARG + 2]) || 4000, path.resolve(process.argv[RECORD_ARG + 3] || 'record-test.wav'));
   if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));
