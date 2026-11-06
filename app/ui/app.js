@@ -806,7 +806,7 @@ function renderSettings() {
   setRadio('[data-appmode]', 'appmode', settings.mode);
   $('modeHelp').textContent = settings.mode === 'agent'
     ? 'Agent: JVoice is your assistant. It answers out loud and does tasks on your computer.'
-    : 'Voice: what you say is typed where your cursor is.';
+    : 'Speech to text: what you say is typed where your cursor is.';
   $('agentBody').classList.toggle('off', settings.mode !== 'agent');
   $('agentBody').toggleAttribute('inert', settings.mode !== 'agent');
   const am = $('agentModel');

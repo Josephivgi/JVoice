@@ -19,8 +19,8 @@ try { win32 = require('./win32.cjs'); } catch (err) { console.error('win32 helpe
 // Test modes read files, use the saved key or record the mic with no UI, so the installed app ignores
 // them. Only --smoke (a self check that prints yes/no results) works in every build.
 const DEV = !app.isPackaged;
-// Agent mode is a beta: it only exists in dev copies and in builds with a -beta version.
-const BETA = DEV || /-beta/i.test(app.getVersion());
+// Agent mode is offered in every build now; speech to text stays the default mode.
+const BETA = true;
 const devArg = (name) => (DEV ? process.argv.indexOf(name) : -1);
 const SMOKE = process.argv.includes('--smoke');
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -205,8 +205,8 @@ function buildTrayMenu() {
     { type: 'separator' },
     { label: 'Pause shortcut', type: 'checkbox', checked: hotkey.paused, click: (i) => { hotkey.paused = i.checked; buildTrayMenu(); broadcastStatus(); } },
     ...(BETA ? [
-      { label: 'Voice mode', type: 'radio', checked: !agentMode(), click: () => setMode('voice') },
-      { label: 'Agent mode (beta)', type: 'radio', checked: agentMode(), click: () => setMode('agent') },
+      { label: 'Speech to text mode', type: 'radio', checked: !agentMode(), click: () => setMode('voice') },
+      { label: 'Agent mode', type: 'radio', checked: agentMode(), click: () => setMode('agent') },
     ] : []),
     { label: 'History', click: () => showMain('history') },
     { label: updater?.state.status === 'ready' ? `Restart to update to ${updater.state.next}` : 'Check for updates',
