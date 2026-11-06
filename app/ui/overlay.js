@@ -185,6 +185,76 @@ async function stop({ id }) {
 window.jvoice.on('rec:start', start);
 window.jvoice.on('rec:stop', stop);
 window.jvoice.on('rec:cancel', () => { teardown(); });
-window.jvoice.on('overlay:state', ({ state, ...data }) => { if (state !== 'recording') render(state, data); });
+window.jvoice.on('overlay:state', ({ state, ...data }) => {
+  if (state === 'assistant') { renderCard(data); return; }
+  hideCard();
+  if (state !== 'recording') render(state, data);
+});
+
+// ---------- assistant card and voice (Agent mode) ----------
+const card = $('card'), phaseEl = $('phase'), you = $('you'), reply = $('reply'), foot = $('foot');
+const PHASE = { listening: 'Listening', thinking: 'Thinking', speaking: '', acting: '', done: '', stopped: 'Stopped' };
+function renderCard(v) {
+  document.body.classList.add('assistant');
+  pill.dataset.state = 'hidden';
+  card.dataset.phase = v.phase || 'thinking';
+  phaseEl.textContent = v.action || PHASE[v.phase] || '';
+  you.textContent = v.task || '';
+  if (reply.textContent !== (v.reply || '')) reply.textContent = v.reply || '';
+  foot.textContent = v.phase === 'done' || v.phase === 'stopped' ? (speaking() ? 'Esc stops talking' : '') : 'Esc stops';
+  foot.hidden = !foot.textContent;
+  ended = v.phase === 'done' || v.phase === 'stopped';
+  if (ended) maybeIdle();
+  const said = v.phase === 'listening' ? 'Listening' : v.phase === 'thinking' && !v.reply ? 'Thinking' : '';
+  if (said && live.textContent !== said) live.textContent = said;
+  if (ended && v.reply && live.textContent !== v.reply) live.textContent = v.reply;
+}
+function hideCard() {
+  if (card.dataset.phase === 'hidden') return;
+  card.dataset.phase = 'hidden';
+  document.body.classList.remove('assistant');
+}
+
+// Windows voices through the Web Speech API: offline, and the first word plays almost at once.
+// Sentences arrive one by one while the model is still writing and are queued in order.
+const synth = window.speechSynthesis;
+// Chromium drops the end event of an utterance that was garbage collected, so each one is held until it ends.
+const held = new Set();
+let ended = false, pending = 0, gen = 0; // gen: utterances cancelled by a hush must not count down the new ones
+const speaking = () => pending > 0;
+function maybeIdle() { if (ended && !speaking()) window.jvoice.send('assistant:idle'); }
+function pickVoice(name) {
+  const voices = synth.getVoices();
+  return (name && voices.find((v) => v.name === name)) || voices.find((v) => v.default) || null;
+}
+window.jvoice.on('assistant:say', ({ text, voice, rate }) => {
+  const u = new SpeechSynthesisUtterance(text);
+  const v = pickVoice(voice);
+  if (v) { u.voice = v; u.lang = v.lang; }
+  u.rate = Number(rate) || 1.15;
+  pending++;
+  const myGen = gen;
+  card.classList.add('talking');
+  const doneOne = () => {
+    if (u.finished || myGen !== gen) return;
+    u.finished = true;
+    held.delete(u);
+    pending = Math.max(0, pending - 1);
+    if (!pending) { card.classList.remove('talking'); if (ended) foot.hidden = true; }
+    maybeIdle();
+  };
+  u.onend = doneOne;
+  u.onerror = doneOne;
+  held.add(u);
+  synth.speak(u);
+});
+window.jvoice.on('assistant:hush', () => {
+  pending = 0;
+  gen++;
+  held.clear();
+  synth.cancel();
+  card.classList.remove('talking');
+});
+synth.getVoices(); // loads the voice list ahead of the first reply
 render('hidden');
 ensureEngine().then((c) => c.suspend()).catch(() => {});

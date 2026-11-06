@@ -152,6 +152,85 @@ async function chat({ key, model, messages, tools, signal, timeoutMs = 120000 })
   return { message, cost: Number(json?.usage?.cost) || 0 };
 }
 
+// Streaming version of chat for the assistant: text arrives in pieces (onText) so it can be spoken
+// while the model is still writing. Tool calls are collected from the stream. Reasoning is turned off
+// for speed; models that refuse that are remembered and asked again with low reasoning.
+async function chatStream({ key, model, messages, tools, signal, onText = () => {}, timeoutMs = 90000 }) {
+  const body = { model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.3, max_tokens: 4096, stream: true, usage: { include: true } };
+  for (let attempt = 0; ; attempt++) {
+    const reasonOff = !mustReason.has(model);
+    try {
+      return await streamOnce({ key, body: { ...body, reasoning: { effort: reasonOff ? 'none' : 'low' } }, signal, onText, timeoutMs });
+    } catch (err) {
+      if (err.status === 400 && reasonOff && /reason/i.test(err.message) && attempt < 1 && !err.started) { mustReason.add(model); continue; }
+      throw err;
+    }
+  }
+}
+
+async function streamOnce({ key, body, signal, onText, timeoutMs }) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  let res;
+  try {
+    res = await fetchImpl(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { ...APP_HEADERS, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+  } catch (err) {
+    if (signal?.aborted) throw new ApiError('Cancelled.', 0);
+    if (err.name === 'TimeoutError' || timeout.aborted) throw new ApiError('OpenRouter took too long to answer. Try again.', 408);
+    throw new ApiError('Could not reach OpenRouter. Check your internet connection.', 0);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    throw new ApiError(friendlyError(res.status, json), res.status);
+  }
+  let content = '', cost = 0, finish = '';
+  const calls = []; // by index
+  const decoder = new TextDecoder();
+  let buf = '';
+  const handle = (line) => {
+    if (!line.startsWith('data:')) return; // ": OPENROUTER PROCESSING" keep-alives and blank lines
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let j;
+    try { j = JSON.parse(data); } catch { return; }
+    if (j.error) throw Object.assign(new ApiError(friendlyError(j.error.code || 500, j), j.error.code || 500), { started: true });
+    if (j.usage?.cost != null) cost = Number(j.usage.cost) || 0;
+    const ch = j.choices?.[0];
+    if (!ch) return;
+    if (ch.finish_reason) finish = ch.finish_reason;
+    const d = ch.delta || {};
+    if (typeof d.content === 'string' && d.content) { content += d.content; onText(d.content); }
+    for (const tc of d.tool_calls || []) {
+      const i = tc.index ?? calls.length;
+      const c = calls[i] || (calls[i] = { id: '', type: 'function', function: { name: '', arguments: '' } });
+      if (tc.id) c.id = tc.id;
+      if (tc.function?.name) c.function.name += tc.function.name;
+      if (tc.function?.arguments) c.function.arguments += tc.function.arguments;
+    }
+  };
+  try {
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { handle(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); }
+    }
+    if (buf) handle(buf.trim());
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (signal?.aborted) throw new ApiError('Cancelled.', 0);
+    if (timeout.aborted) throw new ApiError('OpenRouter took too long to answer. Try again.', 408);
+    throw new ApiError('The connection to OpenRouter dropped. Try again.', 0);
+  }
+  const tool_calls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
+  return { message: { role: 'assistant', content, ...(tool_calls.length && { tool_calls }) }, cost, finish };
+}
+
 async function keyInfo(key) {
   const json = await request('/key', { key, timeoutMs: 15000 });
   const d = json?.data ?? {};
@@ -234,4 +313,4 @@ function countWords(text) {
   return m ? m.length : 0;
 }
 
-module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, chat, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };
+module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, chat, chatStream, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

@@ -142,7 +142,8 @@ function showMain(page) {
   mainWin.focus();
 }
 
-const OVERLAY_W = 300, OVERLAY_H = 72;
+// Tall enough for the assistant card; the status pill sits at the bottom and the rest is see-through.
+const OVERLAY_W = 440, OVERLAY_H = 250;
 let overlayReady = false;
 let overlayQueue = [];
 function createOverlay() {
@@ -270,6 +271,9 @@ const dictation = {
       return;
     }
     const id = ++this.session;
+    hush(); // talking over JVoice interrupts it
+    clearTimeout(assistantHideTimer);
+    if (agentMode(s)) loadStartApps();
     this.target = win32 ? win32.foregroundWindow() : null;
     this.setState('recording');
     this.startedAt = Date.now();
@@ -297,7 +301,11 @@ const dictation = {
   },
 
   cancel(silent = false) {
-    if (this.state === 'idle') return;
+    hush();
+    if (this.state === 'idle') {
+      if (hotkey.speaking) { hotkey.speaking = false; overlayState('hidden'); }
+      return;
+    }
     const wasRecording = this.state === 'recording';
     this.session++;
     if (wasRecording || this.pendingStop) toOverlay('rec:cancel');
@@ -457,6 +465,7 @@ async function runPipeline({ wav, ms, signal, onStage = () => {}, historyId = nu
 const agentMode = (s = store.getSettings()) => BETA && s.mode === 'agent';
 function setMode(mode) {
   store.setSettings({ mode });
+  forgetConvo();
   buildTrayMenu();
   toMain('settings:changed', publicSettings());
 }
@@ -468,12 +477,38 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener('abort', stop, { once: true });
 });
 
-// Screenshots are scaled down to about this size, which vision models read best.
+// Screenshots are scaled down to about this size, which vision models read quickly and well.
 const SHOT_W = 1280, SHOT_H = 800;
 const OUTPUT_LIMIT = 6000;
 
+// Start menu apps (name -> AppID), so "open spotify" works for Store apps too. Read once in the
+// background when an agent recording starts, and kept for ten minutes.
+let startApps = null;
+function loadStartApps() {
+  if (startApps && Date.now() - startApps.at < 600000) return startApps.p;
+  const p = new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress'],
+      { windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+        let list = [];
+        try { list = [].concat(JSON.parse(stdout || '[]')).filter((a) => a && a.Name && a.AppID); } catch { /* none */ }
+        resolve(list);
+      });
+  });
+  startApps = { at: Date.now(), p };
+  return p;
+}
+// Best Start menu match for a spoken app name: exact name, then starts with, then contains.
+function findStartApp(list, name) {
+  const n = name.toLowerCase().replace(/\.exe$/, '').trim();
+  const by = (f) => list.find((a) => f(a.Name.toLowerCase()));
+  return by((x) => x === n) || by((x) => x.startsWith(`${n} `) || x.startsWith(n)) || (n.length >= 4 ? by((x) => x.includes(n)) : null);
+}
+const OPEN_SCHEMES = /^(https?|mailto|ms-settings|ms-windows-store|spotify|steam|discord|msteams|slack|zoommtg|calculator|ms-clock|ms-photos|onenote|outlookmail|microsoft-edge):/i;
+const SCRIPT_EXT = new Set(['.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi', '.reg', '.hta', '.scr', '.com', '.cpl']);
+const SHELL_APPS = new Set(['cmd', 'powershell', 'pwsh', 'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32', 'reg', 'regedit', 'bash', 'wsl']);
+
 // The real computer for agent.cjs: the screen the cursor was on, the mouse and keyboard, PowerShell.
-function agentIo({ signal, target }) {
+function agentIo({ signal, target, say = () => {} }) {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const title = win32 ? win32.windowTitle() : '';
   let map = null; // screenshot pixels -> physical screen pixels
@@ -481,12 +516,60 @@ function agentIo({ signal, target }) {
   // Our own key presses must not read as the user pressing Esc to stop the agent.
   const quiet = async (fn) => { hotkey.muteUntil = Date.now() + 5000; try { return fn(); } finally { hotkey.muteUntil = Date.now() + 400; } };
   const need = () => { if (!win32) throw new Error('Mouse and keyboard control is not available.'); };
+  // Asks before something that runs code (commands, scripts), unless commands are set to always allow.
+  const allowed = async (message, detail) => {
+    const mode = store.getSettings().agentCommands;
+    if (mode === 'off') return false;
+    if (mode === 'allow') return true;
+    const { response } = await dialog.showMessageBox({
+      type: 'question', title: 'JVoice Agent', buttons: ['Run it', 'Do not run'], defaultId: 1, cancelId: 1, noLink: true,
+      message, detail: detail.slice(0, 2000),
+    });
+    if (signal.aborted) throw new Error('Cancelled.');
+    return response === 0;
+  };
   return {
     window: () => ({ title, exe: target?.exe || '' }),
-    async screenshot() {
-      await sleep(400, signal); // let the screen finish drawing after the last action
+    say,
+    async open(t) {
+      if (OPEN_SCHEMES.test(t)) {
+        if (/^https?:/i.test(t)) { try { new URL(t); } catch { throw new Error('That is not a valid link.'); } }
+        await shell.openExternal(t);
+        return `Opened ${t}.`;
+      }
+      if (/^[a-z][a-z0-9+.-]*:(?![\\/])/i.test(t)) throw new Error('JVoice does not open that kind of link.');
+      const file = t.replace(/^"(.*)"$/, '$1').replace(/^~(?=[\\/])/, app.getPath('home'));
+      if (/[\\/]/.test(file) && fs.existsSync(file)) {
+        if (SCRIPT_EXT.has(path.extname(file).toLowerCase()) && !(await allowed('JVoice Agent wants to run this file:', file))) return 'The user did not allow running this file.';
+        const err = await shell.openPath(file);
+        if (err) throw new Error(err);
+        return `Opened ${file}.`;
+      }
+      if (!/^[\p{L}\p{N} ._+&'-]{1,60}$/u.test(t)) throw new Error('Give a link, a file path or an app name.');
+      if (SHELL_APPS.has(t.toLowerCase().replace(/\.exe$/, ''))) throw new Error('Use run_command for command lines.');
+      const hit = findStartApp(await loadStartApps(), t);
+      if (hit) {
+        execFile('explorer.exe', [`shell:AppsFolder\\${hit.AppID}`], { windowsHide: true }, () => {});
+        return `Opened ${hit.Name}.`;
+      }
+      // Not in the Start menu: let Windows find it (App Paths and PATH, like Win+R does).
+      return new Promise((resolve, reject) => {
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $args[0]', t],
+          { windowsHide: true, timeout: 15000 }, (err, _o, stderr) => (err ? reject(new Error(`Could not find an app called "${t}".`)) : resolve(`Opened ${t}.${stderr ? ` ${stderr.trim()}` : ''}`)));
+      });
+    },
+    async screenshot(settleMs = 200) {
+      if (settleMs) await sleep(settleMs, signal); // let the screen finish drawing after the last action
       const phys = screen.dipToScreenRect(null, display.bounds);
       const scale = Math.min(1, SHOT_W / phys.width, SHOT_H / phys.height);
+      const outW = Math.round(phys.width * scale), outH = Math.round(phys.height * scale);
+      if (win32?.captureScreen) {
+        try {
+          const img = nativeImage.createFromBitmap(win32.captureScreen(phys.x, phys.y, phys.width, phys.height, outW, outH), { width: outW, height: outH });
+          map = { x: phys.x, y: phys.y, sx: phys.width / outW, sy: phys.height / outH };
+          return { width: outW, height: outH, dataUrl: `data:image/jpeg;base64,${img.toJPEG(75).toString('base64')}` };
+        } catch (err) { console.error('fast screenshot failed, using desktopCapturer', err.message); }
+      }
       const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: Math.round(phys.width * scale), height: Math.round(phys.height * scale) } });
       const src = sources.find((x) => x.display_id === String(display.id)) || sources[0];
       if (!src || src.thumbnail.isEmpty()) throw new Error('JVoice could not take a screenshot.');
@@ -500,14 +583,7 @@ function agentIo({ signal, target }) {
     keys: (keys) => { need(); return quiet(() => win32.sendKeys(keys)); },
     wait: (ms) => sleep(ms, signal),
     async run(command) {
-      if (store.getSettings().agentCommands === 'ask') {
-        const { response } = await dialog.showMessageBox({
-          type: 'question', title: 'JVoice Agent', buttons: ['Run it', 'Do not run'], defaultId: 1, cancelId: 1, noLink: true,
-          message: 'JVoice Agent wants to run this PowerShell command:', detail: command.slice(0, 2000),
-        });
-        if (signal.aborted) throw new Error('Cancelled.');
-        if (response !== 0) return 'The user did not allow this command. Do the task another way, or call done.';
-      }
+      if (!(await allowed('JVoice Agent wants to run this PowerShell command:', command))) return 'The user did not allow this command. Do the task another way, or tell them.';
       return new Promise((resolve) => {
         execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
           { windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024, signal },
@@ -525,40 +601,96 @@ function agentIo({ signal, target }) {
   };
 }
 
+// The conversation so far, so a follow up ("and turn it up") knows what "it" is.
+let convo = null; // { history, at, model }
+const forgetConvo = () => { convo = null; };
+
+// Speech: the overlay page speaks with the Windows voices (no network, starts in a few milliseconds).
+function speak(text) {
+  const s = store.getSettings();
+  if (AGENT_ARG > 0) console.log(`[say +${Date.now() - (speakClock || Date.now())}ms] ${text}`);
+  if (!s.agentSpeak || !text) return;
+  hotkey.speaking = true;
+  toOverlay('assistant:say', { text, voice: s.agentVoice, rate: s.agentRate });
+}
+let speakClock = 0;
+const hush = () => { hotkey.speaking = false; toOverlay('assistant:hush'); };
+
+// The assistant card on screen: what the user said, what JVoice is saying, and what it is doing.
+let assistantHideTimer = null;
+function assistantView(view) {
+  clearTimeout(assistantHideTimer);
+  overlayState('assistant', view);
+}
+// After the reply, the card stays until the voice finishes (the overlay says so), then fades.
+function assistantDone(view) {
+  assistantView(view);
+  assistantHideTimer = setTimeout(() => overlayState('hidden'), 60000);
+}
+ipcMain.on('assistant:idle', (e) => {
+  if (!overlayWin || e.sender !== overlayWin.webContents) return;
+  hotkey.speaking = false;
+  if (dictation.state !== 'idle') return;
+  clearTimeout(assistantHideTimer);
+  assistantHideTimer = setTimeout(() => { if (dictation.state === 'idle') overlayState('hidden'); }, 2500);
+});
+
 // text: a typed task for the --agent test mode, used instead of transcribing wav.
 async function runAgentTask({ wav, ms, signal, target, current, text = null }) {
   const s = store.getSettings();
   const key = getKey();
-  const t = text !== null ? { text, cost: 0 } : await api.transcribe({ key, model: s.sttModel, wav, language: s.language, signal });
-  const task = api.applyDictionary(api.stripSoundTags(t.text), store.listDictionary()).trim();
-  if (signal.aborted || !current()) return;
-  if (!task) { overlayState('error', { message: 'No speech detected.' }, 1800); return; }
-  const show = (label, step) => { if (current()) overlayState('agent', { label, sub: step ? `Step ${step + 1}. Esc stops.` : 'Esc stops.' }); };
-  // The pill stays out of the agent's screenshots, so it never covers what the agent needs to see.
+  speakClock = Date.now();
+  const view = { phase: 'listening', task: '', reply: '', action: '' };
+  const show = () => { if (current()) assistantView({ ...view }); };
+  show();
+  // The card stays out of the agent's screenshots, so it never covers what the agent needs to see.
   const ov = overlayWin && !overlayWin.isDestroyed() ? overlayWin : null;
   ov?.setContentProtection(true);
-  let r;
+  const io = agentIo({ signal, target, say: speak });
+  // The screenshot is taken while the speech is transcribed, so it costs no time.
+  const firstShot = io.screenshot(0);
+  firstShot.catch(() => {});
+  if (AGENT_ARG > 0) { console.log(`[model ${s.agentModel}]`); firstShot.then(() => console.log(`[screenshot +${Date.now() - speakClock}ms]`), () => {}); }
+  let r, t;
   try {
+    t = text !== null ? { text, cost: 0 } : await api.transcribe({ key, model: s.sttModel, wav, language: s.language, signal });
+    const task = api.applyDictionary(api.stripSoundTags(t.text), store.listDictionary()).trim();
+    if (signal.aborted || !current()) return;
+    if (!task) { overlayState('error', { message: 'No speech detected.' }, 1800); return; }
+    view.task = task;
+    view.phase = 'thinking';
+    show();
+    const history = convo && convo.model === s.agentModel && Date.now() - convo.at < agent.FOLLOW_UP_MS ? convo.history : [];
     r = await agent.runAgent({
-      chat: api.chat, key, model: s.agentModel, task, io: agentIo({ signal, target }), signal,
-      onStep: show, allowCommands: s.agentCommands !== 'off',
+      chat: api.chatStream, key, model: s.agentModel, task, io, signal, history, firstShot,
+      allowCommands: s.agentCommands !== 'off',
+      onStep: (label, step) => {
+        view.action = step || label !== 'Listening' ? label : '';
+        if (label === 'Thinking' || label === 'Listening') { view.phase = 'thinking'; view.action = ''; } else view.phase = 'acting';
+        show();
+      },
+      onText: (_d, turnText) => { if (AGENT_ARG > 0 && turnText === _d) console.log(`[first text +${Date.now() - speakClock}ms]`); view.reply = turnText; view.phase = 'speaking'; show(); },
     });
+    r.task = task;
   } catch (err) {
     if (signal.aborted) return;
     err.message = `Agent: ${err.message}`;
+    speak('Sorry, something went wrong.');
     throw err;
   } finally { ov?.setContentProtection(false); }
   if (signal.aborted || !current()) return;
+  convo = { history: agent.trimHistory(r.history), at: Date.now(), model: s.agentModel };
   if (s.keepHistory) {
     store.addHistory({
-      status: 'done', style: 'agent', raw: task, final: r.written || r.summary, error: r.success ? '' : r.summary,
-      stt_model: s.sttModel, ai_model: s.agentModel, duration_ms: ms, words: api.countWords(task), cost: t.cost + r.cost,
+      status: 'done', style: 'agent', raw: r.task, final: r.written || r.summary, error: r.success ? '' : r.summary,
+      stt_model: s.sttModel, ai_model: s.agentModel, duration_ms: ms, words: api.countWords(r.task), cost: t.cost + r.cost,
     });
     toMain('history:changed');
   }
-  overlayState('agentdone', { success: r.success, summary: r.summary }, r.success ? 4000 : 6000);
-  toMain('agent:done', { task, ...r });
-  return { task, ...r };
+  assistantDone({ phase: r.success ? 'done' : 'stopped', task: r.task, reply: r.summary, action: '', speaking: !!s.agentSpeak });
+  const { history: _h, ...out } = r;
+  toMain('agent:done', out);
+  return out;
 }
 
 // ---------- speed test ----------
@@ -724,6 +856,8 @@ function registerIpc() {
     if (clean.outputMode && !['paste', 'copy'].includes(clean.outputMode)) delete clean.outputMode;
     if ('mode' in clean && (!BETA || !['voice', 'agent'].includes(clean.mode))) delete clean.mode;
     if (clean.agentCommands && !['ask', 'allow', 'off'].includes(clean.agentCommands)) delete clean.agentCommands;
+    if ('agentVoice' in clean) clean.agentVoice = str(clean.agentVoice, 200);
+    if ('agentRate' in clean) clean.agentRate = Math.min(2, Math.max(0.6, Number(clean.agentRate) || 1.15));
     if ('charLimit' in clean && ![0, 128, 280, 500, 1024].includes(Number(clean.charLimit))) delete clean.charLimit;
     else if ('charLimit' in clean) clean.charLimit = Number(clean.charLimit);
     for (const k of ['sttModel', 'aiModel', 'agentModel']) {
@@ -736,13 +870,13 @@ function registerIpc() {
     if ('micDeviceId' in clean) clean.micDeviceId = str(clean.micDeviceId, 256);
     if ('speedLength' in clean) clean.speedLength = speed.plannedSeconds(clean.speedLength);
     if ('maxRecordSeconds' in clean) clean.maxRecordSeconds = Math.min(600, Math.max(5, Math.round(Number(clean.maxRecordSeconds)) || 600));
-    for (const k of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'keepHistory', 'closeHintShown']) {
+    for (const k of ['aiEnabled', 'restoreClipboard', 'sounds', 'launchAtLogin', 'keepHistory', 'closeHintShown', 'agentSpeak']) {
       if (k in clean) clean[k] = !!clean[k];
     }
     store.setSettings(clean);
     if ('launchAtLogin' in clean) applyLoginItem(!!clean.launchAtLogin);
     if (clean.hotkey || clean.hotkeyMode) applyHotkeySettings();
-    if ('mode' in clean) buildTrayMenu();
+    if ('mode' in clean) { buildTrayMenu(); forgetConvo(); }
     return publicSettings();
   });
   handle('key:set', async (key) => {
@@ -925,6 +1059,10 @@ async function runShots(dir) {
       ['agent', `render('agent',{label:'Pressing Ctrl+L',sub:'Step 3. Esc stops.'})`],
       ['agentdone', `render('agentdone',{success:true,summary:'Opened Notepad and wrote a short haiku about rain, then saved it to your Desktop.'})`],
       ['agentstopped', `render('agentdone',{success:false,summary:'The site asks for a password, so I stopped.'})`],
+      ['assistant-thinking', `renderCard({phase:'thinking',task:'Open Spotify and play my liked songs'})`],
+      ['assistant-acting', `renderCard({phase:'acting',task:'Open Spotify and play my liked songs',reply:'Opening Spotify.',action:'Pressing Ctrl+L'})`],
+      ['assistant-done', `card.classList.add('talking');renderCard({phase:'done',task:'What is the weather like for a run tomorrow morning in Seattle, and should I bring a jacket?',reply:'Tomorrow morning in Seattle looks cool and cloudy, around 48 degrees with a light breeze. A thin jacket is a good idea, and you can take it off once you warm up. Rain is not expected until the afternoon.'})`],
+      ['assistant-stopped', `card.classList.remove('talking');renderCard({phase:'stopped',task:'Log into my bank',reply:'The site is asking for your password, so I stopped there.'})`],
     ];
     for (const [name, js] of states) { await ov.webContents.executeJavaScript(js); await shot(ov, `${theme}-overlay-${name}`); }
     ov.destroy();
@@ -1025,13 +1163,23 @@ async function runAgentFile(arg) {
     if (!getKey()) throw new Error('No OpenRouter key saved. Add one in the app first.');
     const isWav = /\.wav$/i.test(arg) && fs.existsSync(arg);
     const wav = isWav ? readWav(arg) : null;
-    const ac = new AbortController();
-    const started = Date.now();
-    const r = await runAgentTask({
-      wav, ms: wav ? Math.round(((wav.length - 44) / 32000) * 1000) : 0, signal: ac.signal,
-      target: win32 ? win32.foregroundWindow() : null, current: () => true, text: isWav ? null : arg,
-    });
-    process.stdout.write(JSON.stringify({ ...r, seconds: Math.round((Date.now() - started) / 1000) }, null, 2) + '\n');
+    // Typed tasks can be chained with "||" to test follow ups in one conversation.
+    const tasks = isWav ? [null] : String(arg).split('||').map((x) => x.trim()).filter(Boolean);
+    let r;
+    for (const text of tasks) {
+      const ac = new AbortController();
+      const started = Date.now();
+      r = await runAgentTask({
+        wav, ms: wav ? Math.round(((wav.length - 44) / 32000) * 1000) : 0, signal: ac.signal,
+        target: win32 ? win32.foregroundWindow() : null, current: () => true, text,
+      });
+      process.stdout.write(JSON.stringify({ ...r, ms: Date.now() - started }, null, 2) + '\n');
+      // Let the voice finish before the next task or the exit (the overlay says when it is quiet).
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 30000);
+        ipcMain.once('assistant:idle', () => { clearTimeout(t); console.log(`[voice finished +${Date.now() - started}ms]`); resolve(); });
+      });
+    }
     app.exit(r?.success ? 0 : 1);
   } catch (err) {
     process.stderr.write(`ERROR: ${err.message}\n`);
@@ -1093,7 +1241,7 @@ app.whenReady().then(async () => {
       return app.exit(0);
     } catch (err) { process.stderr.write(`ERROR: ${err.message}\n`); return app.exit(1); }
   }
-  if (AGENT_ARG > 0) { createOverlay(); return runAgentFile(process.argv[AGENT_ARG + 1]); }
+  if (AGENT_ARG > 0) { createOverlay(); overlayWin.webContents.on('console-message', (e) => console.log(`[overlay] ${e.message ?? e}`)); return runAgentFile(process.argv[AGENT_ARG + 1]); }
   if (SPEED_ARG > 0) return runSpeedTest(process.argv[SPEED_ARG + 2], Number(process.argv[SPEED_ARG + 3]) || 0, path.resolve(process.argv[SPEED_ARG + 4] || 'speed-shots'));
   if (RECORD_ARG > 0) return runRecordTest(Number(process.argv[RECORD_ARG + 2]) || 4000, path.resolve(process.argv[RECORD_ARG + 3] || 'record-test.wav'));
   if (SHOTS_ARG > 0) return runShots(path.resolve(process.argv[SHOTS_ARG + 1] || 'shots'));

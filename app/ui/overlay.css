@@ -58,3 +58,54 @@ body { display: flex; align-items: center; justify-content: center; }
 @keyframes pulse { 50% { opacity: .35; } }
 @keyframes rot { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .dot, .spin { animation: none; } .wave i { transition: none; } }
+
+/* ---------- assistant card (Agent mode) ---------- */
+/* The window is taller than the pill; both sit at its bottom and the rest is see-through. */
+body { align-items: flex-end; padding-bottom: 14px; box-sizing: border-box; }
+.card {
+  --c-bg: oklch(0.17 0.008 260 / 0.95);
+  --c-text: oklch(0.96 0.004 260);
+  --c-sub: oklch(0.75 0.01 260);
+  --c-accent: oklch(0.74 0.14 258);
+  --c-ok: oklch(0.78 0.14 155);
+  --c-warn: oklch(0.82 0.13 80);
+  position: absolute; left: 50%; bottom: 14px; translate: -50% 0;
+  width: 400px; box-sizing: border-box; padding: var(--sp-3) var(--sp-4) 10px;
+  background: var(--c-bg); color: var(--c-text);
+  border: 1px solid oklch(1 0 0 / 0.10); border-radius: 18px;
+  box-shadow: 0 10px 30px oklch(0 0 0 / 0.40);
+  display: flex; flex-direction: column; gap: 6px;
+  transition: opacity .18s var(--ease), transform .18s var(--ease);
+}
+.card[data-phase="hidden"] { opacity: 0; transform: translateY(10px) scale(.98); pointer-events: none; }
+body.assistant .pill { opacity: 0; }
+
+.card-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.name { font-size: var(--fs-md); font-weight: 600; }
+.phase { margin-left: auto; font-size: var(--fs-xs); color: var(--c-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+[data-phase="acting"] .phase { color: var(--c-accent); }
+[data-phase="stopped"] .phase { color: var(--c-warn); }
+
+/* The orb: three soft rings that breathe while listening, spin while thinking, pulse while talking. */
+.orb { position: relative; width: 22px; height: 22px; flex: none; }
+.orb i { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--c-accent); opacity: .9; }
+.orb i:nth-child(2) { inset: 4px; opacity: .6; }
+.orb i:nth-child(3) { inset: 8px; background: var(--c-accent); border: 0; }
+[data-phase="listening"] .orb i { animation: breathe 1.4s ease-in-out infinite; }
+[data-phase="thinking"] .orb i:nth-child(1) { border-color: var(--c-accent) transparent var(--c-accent) transparent; animation: rot .8s linear infinite; }
+[data-phase="acting"] .orb i:nth-child(1) { border-color: var(--c-accent) transparent; animation: rot 1.2s linear infinite; }
+.card.talking .orb i:nth-child(3) { animation: talk .5s ease-in-out infinite alternate; }
+[data-phase="done"] .orb i { border-color: var(--c-ok); }
+[data-phase="done"] .orb i:nth-child(3) { background: var(--c-ok); }
+[data-phase="stopped"] .orb i { border-color: var(--c-warn); }
+[data-phase="stopped"] .orb i:nth-child(3) { background: var(--c-warn); }
+
+.you, .reply, .foot { margin: 0; }
+.you { font-size: var(--fs-sm); color: var(--c-sub); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.you:empty, .reply:empty { display: none; }
+.reply { font-size: 15px; line-height: 1.4; max-height: calc(1.4em * 4); overflow: hidden; display: flex; flex-direction: column-reverse; }
+.foot { font-size: var(--fs-xs); color: var(--c-sub); }
+
+@keyframes breathe { 50% { transform: scale(.82); opacity: .5; } }
+@keyframes talk { to { transform: scale(1.35); } }
+@media (prefers-reduced-motion: reduce) { .orb i { animation: none !important; } }

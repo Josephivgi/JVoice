@@ -9,6 +9,16 @@
 </head>
 <body>
   <div class="sr" id="live" role="status" aria-live="assertive" aria-atomic="true"></div>
+  <div class="card" id="card" data-phase="hidden" aria-hidden="true">
+    <div class="card-head">
+      <span class="orb" aria-hidden="true"><i></i><i></i><i></i></span>
+      <b class="name">JVoice</b>
+      <span class="phase" id="phase"></span>
+    </div>
+    <p class="you" id="you"></p>
+    <p class="reply" id="reply"></p>
+    <p class="foot" id="foot">Esc stops</p>
+  </div>
   <div class="pill" id="pill" data-state="hidden" aria-hidden="true">
     <span class="lead" aria-hidden="true">
       <span class="dot"></span>

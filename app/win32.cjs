@@ -256,4 +256,48 @@ const clipboardSequence = () => GetClipboardSequenceNumber();
 // BrowserWindow.getNativeWindowHandle() returns the HWND bytes.
 const hwndOf = (buf) => (buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0)));
 
-module.exports = { foregroundWindow, windowTitle, isKeyDown, sendKeys, typeText, moveMouse, click, scroll, snapshotClipboard, restoreClipboard, setClipboardText, clipboardSequence, hwndOf };
+// Screen capture with GDI for Agent mode: one StretchBlt of the screen area straight into a small bitmap.
+// Much faster than desktopCapturer, which builds thumbnails of every screen. Windows marked as excluded
+// from capture (the JVoice card) stay out, and layered windows are not copied without CAPTUREBLT.
+const GetDC = user32.func('void* __stdcall GetDC(void*)');
+const ReleaseDC = user32.func('int __stdcall ReleaseDC(void*, void*)');
+const CreateCompatibleDC = gdi32.func('void* __stdcall CreateCompatibleDC(void*)');
+const CreateCompatibleBitmap = gdi32.func('void* __stdcall CreateCompatibleBitmap(void*, int, int)');
+const SelectObject = gdi32.func('void* __stdcall SelectObject(void*, void*)');
+const DeleteObject = gdi32.func('int __stdcall DeleteObject(void*)');
+const DeleteDC = gdi32.func('int __stdcall DeleteDC(void*)');
+const SetStretchBltMode = gdi32.func('int __stdcall SetStretchBltMode(void*, int)');
+const SetBrushOrgEx = gdi32.func('int __stdcall SetBrushOrgEx(void*, int, int, void*)');
+const StretchBlt = gdi32.func('int __stdcall StretchBlt(void*, int, int, int, int, void*, int, int, int, int, uint32)');
+const BITMAPINFOHEADER = koffi.struct('BITMAPINFOHEADER', {
+  biSize: 'uint32', biWidth: 'int32', biHeight: 'int32', biPlanes: 'uint16', biBitCount: 'uint16', biCompression: 'uint32',
+  biSizeImage: 'uint32', biXPelsPerMeter: 'int32', biYPelsPerMeter: 'int32', biClrUsed: 'uint32', biClrImportant: 'uint32',
+});
+const GetDIBits = gdi32.func('int __stdcall GetDIBits(void*, void*, uint32, uint32, _Out_ uint8*, BITMAPINFOHEADER*, uint32)');
+const SRCCOPY = 0x00CC0020, HALFTONE = 4;
+// Returns BGRA pixels (top-down, alpha set opaque) of the physical screen rect x,y,w,h scaled to outW x outH.
+function captureScreen(x, y, w, h, outW, outH) {
+  const screenDc = GetDC(null);
+  if (!screenDc) throw new Error('No screen device context.');
+  const memDc = CreateCompatibleDC(screenDc);
+  const bmp = CreateCompatibleBitmap(screenDc, outW, outH);
+  const old = SelectObject(memDc, bmp);
+  try {
+    SetStretchBltMode(memDc, HALFTONE);
+    SetBrushOrgEx(memDc, 0, 0, null);
+    if (!StretchBlt(memDc, 0, 0, outW, outH, screenDc, x, y, w, h, SRCCOPY)) throw new Error('Screen copy failed.');
+    const pixels = Buffer.alloc(outW * outH * 4);
+    const info = { biSize: 40, biWidth: outW, biHeight: -outH, biPlanes: 1, biBitCount: 32, biCompression: 0, biSizeImage: 0, biXPelsPerMeter: 0, biYPelsPerMeter: 0, biClrUsed: 0, biClrImportant: 0 };
+    SelectObject(memDc, old); // GetDIBits needs the bitmap out of the DC
+    if (GetDIBits(memDc, bmp, 0, outH, pixels, info, 0) !== outH) throw new Error('Reading the screen copy failed.');
+    for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
+    return pixels;
+  } finally {
+    SelectObject(memDc, old);
+    DeleteObject(bmp);
+    DeleteDC(memDc);
+    ReleaseDC(null, screenDc);
+  }
+}
+
+module.exports = { foregroundWindow, windowTitle, isKeyDown, sendKeys, typeText, moveMouse, click, scroll, snapshotClipboard, restoreClipboard, setClipboardText, clipboardSequence, hwndOf, captureScreen };

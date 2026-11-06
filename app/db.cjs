@@ -25,8 +25,11 @@ const DEFAULTS = {
   updateNotes: '', // notes of the update being installed, saved just before the restart
   speedLength: 60, // speed test length in seconds; 0 = until the user stops
   mode: 'voice', // 'voice' types what you say | 'agent' does what you say (beta builds only)
-  agentModel: 'anthropic/claude-sonnet-5.5', // needs image input and tool calls
+  agentModel: 'anthropic/claude-haiku-5.5', // needs image input and tool calls; a fast model keeps replies quick
   agentCommands: 'ask', // PowerShell commands in Agent mode: 'ask' | 'allow' | 'off'
+  agentSpeak: true, // the assistant says its replies out loud
+  agentVoice: '', // Windows voice name; '' = the system default
+  agentRate: 1.15, // speaking speed
 
 };
 

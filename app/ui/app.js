@@ -165,9 +165,9 @@ function renderHero() {
   const agentOn = settings.mode === 'agent';
   $('homeMode').hidden = !settings.beta;
   setRadio('[data-appmode]', 'appmode', settings.mode);
-  $('heroTitle').textContent = agentOn ? (hold ? 'Hold the keys and say a task' : 'Press the keys and say a task')
+  $('heroTitle').textContent = agentOn ? (hold ? 'Hold the keys and talk to JVoice' : 'Press the keys and talk to JVoice')
     : hold ? 'Hold the keys and talk' : 'Press the keys and talk';
-  const out = agentOn ? 'the agent does it on your computer. Esc stops it'
+  const out = agentOn ? 'JVoice answers out loud or does the task on your computer. Esc stops it'
     : settings.outputMode === 'paste' ? 'the text is typed wherever your cursor is' : 'the text is copied so you can paste it';
   $('heroSub').textContent = hold ? `Let go and ${out}.` : `Press them again and ${out}.`;
   $('setup').hidden = settings.hasKey;
@@ -793,9 +793,9 @@ document.querySelectorAll('[role="radiogroup"]').forEach(radioKeys);
 
 // Agent models: each can see screenshots and call tools on OpenRouter.
 const AGENT_MODELS = [
-  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5 (default)'],
-  ['anthropic/claude-opus-5.5', 'Claude Opus 5.5'],
-  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5 (cheapest)'],
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5 (fastest, default)'],
+  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5 (smarter, slower)'],
+  ['anthropic/claude-opus-5.5', 'Claude Opus 5.5 (smartest, slowest)'],
   ['google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
   ['openai/gpt-5.6-terra', 'GPT-5.6 Terra'],
 ];
@@ -805,7 +805,7 @@ function renderSettings() {
   $('modeGroup').hidden = !settings.beta;
   setRadio('[data-appmode]', 'appmode', settings.mode);
   $('modeHelp').textContent = settings.mode === 'agent'
-    ? 'Agent: say a task, and the AI does it on your computer, or writes the text you asked for.'
+    ? 'Agent: JVoice is your assistant. It answers out loud and does tasks on your computer.'
     : 'Voice: what you say is typed where your cursor is.';
   $('agentBody').classList.toggle('off', settings.mode !== 'agent');
   $('agentBody').toggleAttribute('inert', settings.mode !== 'agent');
@@ -814,6 +814,13 @@ function renderSettings() {
   am.replaceChildren(...list.map(([id, name]) => el('option', { value: id }, name)));
   am.value = settings.agentModel;
   setRadio('[data-cmds]', 'cmds', settings.agentCommands);
+  $('agentSpeak').checked = settings.agentSpeak;
+  renderVoices();
+  const rate = $('agentRate');
+  if (![...rate.options].some((o) => Number(o.value) === settings.agentRate)) rate.append(el('option', { value: String(settings.agentRate) }, `${settings.agentRate}x`));
+  rate.value = [...rate.options].find((o) => Number(o.value) === settings.agentRate).value;
+  $('agentVoice').disabled = !settings.agentSpeak;
+  rate.disabled = !settings.agentSpeak;
   $('cmdHelp').textContent = { ask: 'JVoice shows each command and runs it only if you say yes.', allow: 'Commands run without asking. Only for tasks you trust.', off: 'The agent only uses the mouse and keyboard.' }[settings.agentCommands];
   $('hkKeys').replaceChildren(keycaps(settings.hotkeyLabel));
   setRadio('[data-mode]', 'mode', settings.hotkeyMode);
@@ -845,6 +852,27 @@ document.querySelectorAll('[data-output]').forEach((b) => b.addEventListener('cl
 document.querySelectorAll('[data-appmode]').forEach((b) => b.addEventListener('click', () => save({ mode: b.dataset.appmode })));
 document.querySelectorAll('[data-cmds]').forEach((b) => b.addEventListener('click', () => save({ agentCommands: b.dataset.cmds })));
 $('agentModel').addEventListener('change', (e) => save({ agentModel: e.target.value }));
+$('agentSpeak').addEventListener('change', (e) => save({ agentSpeak: e.target.checked }));
+$('agentVoice').addEventListener('change', (e) => { save({ agentVoice: e.target.value }); previewVoice(e.target.value, settings.agentRate); });
+$('agentRate').addEventListener('change', (e) => { save({ agentRate: Number(e.target.value) }); previewVoice(settings.agentVoice, Number(e.target.value)); });
+// The Windows voices, the same list the overlay speaks with. They can load a moment after the page.
+function renderVoices() {
+  const sel = $('agentVoice');
+  const voices = speechSynthesis.getVoices();
+  const opts = [el('option', { value: '' }, 'Windows default'), ...voices.map((v) => el('option', { value: v.name }, `${v.name.replace(/^Microsoft /, '').replace(/ - .*$/, '')} (${v.lang})`))];
+  if (settings.agentVoice && !voices.some((v) => v.name === settings.agentVoice)) opts.push(el('option', { value: settings.agentVoice }, settings.agentVoice));
+  sel.replaceChildren(...opts);
+  sel.value = settings.agentVoice;
+}
+speechSynthesis.addEventListener('voiceschanged', () => { if (settings) renderVoices(); });
+function previewVoice(name, rate) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance('Hi, I am JVoice. What can I do for you?');
+  const v = speechSynthesis.getVoices().find((x) => x.name === name);
+  if (v) { u.voice = v; u.lang = v.lang; }
+  u.rate = rate || 1.15;
+  speechSynthesis.speak(u);
+}
 // The tray menu can switch the mode too.
 api.on('settings:changed', (s) => { settings = s; renderSettings(); renderHero(); });
 api.on('agent:done', () => { if (!$('page-home').hidden) loadHome(); });

@@ -259,9 +259,27 @@
                   <button role="radio" data-cmds="off" type="button">Off</button>
                 </div>
               </div>
+              <div class="setting flush">
+                <div class="setting-text"><b>Talk back</b><span class="muted">JVoice says its answers out loud. Esc or the shortcut stops it.</span></div>
+                <label class="switch"><input type="checkbox" id="agentSpeak"><span></span><b class="sr">Talk back</b></label>
+              </div>
+              <div class="setting flush">
+                <div class="setting-text"><b>Voice</b><span class="muted">Windows voices. More can be added in Windows Settings, Time and language, Speech.</span></div>
+                <select id="agentVoice" aria-label="Voice"></select>
+              </div>
+              <div class="setting flush">
+                <div class="setting-text"><b>Speaking speed</b></div>
+                <select id="agentRate" aria-label="Speaking speed">
+                  <option value="0.9">Slow</option>
+                  <option value="1">Normal</option>
+                  <option value="1.15">Quick</option>
+                  <option value="1.35">Fast</option>
+                  <option value="1.6">Very fast</option>
+                </select>
+              </div>
             </div>
           </div>
-          <p class="hint">Agent mode is a beta. It sees your screen and clicks and types for you, so watch it work. Press Esc to stop it at any time.</p>
+          <p class="hint">Agent mode is a beta. Talk to JVoice like an assistant: ask a question and it answers out loud, or give it a task and it clicks, types and opens things for you. Follow ups within 3 minutes remember the conversation. Press Esc to stop it at any time.</p>
         </section>
 
         <section class="group" aria-labelledby="g-hotkey">
