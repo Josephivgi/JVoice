@@ -618,21 +618,36 @@ const hush = () => { hotkey.speaking = false; toOverlay('assistant:hush'); };
 
 // The assistant card on screen: what the user said, what JVoice is saying, and what it is doing.
 let assistantHideTimer = null;
+let assistantEnded = false; // the run finished; the card only waits for the voice now
+const hideAssistant = (ms) => {
+  clearTimeout(assistantHideTimer);
+  assistantHideTimer = setTimeout(() => {
+    if (assistantEnded && dictation.state !== 'recording') {
+      hotkey.speaking = false;
+      overlayState('hidden');
+      if (AGENT_ARG > 0) console.log(`[card hidden +${Date.now() - speakClock}ms]`);
+    }
+  }, ms);
+};
 function assistantView(view) {
   clearTimeout(assistantHideTimer);
+  assistantEnded = false;
   overlayState('assistant', view);
 }
 // After the reply, the card stays until the voice finishes (the overlay says so), then fades.
+// The voice can fail to report its end, so the card also hides after about as long as the
+// reply takes to say, plus a few seconds to read it.
 function assistantDone(view) {
   assistantView(view);
-  assistantHideTimer = setTimeout(() => overlayState('hidden'), 60000);
+  assistantEnded = true;
+  const s = store.getSettings();
+  const words = api.countWords(view.reply || '');
+  hideAssistant(s.agentSpeak ? Math.min(30000, 4000 + (words / 2.6 / (s.agentRate || 1)) * 1000) : Math.min(12000, 4000 + words * 150));
 }
 ipcMain.on('assistant:idle', (e) => {
   if (!overlayWin || e.sender !== overlayWin.webContents) return;
   hotkey.speaking = false;
-  if (dictation.state !== 'idle') return;
-  clearTimeout(assistantHideTimer);
-  assistantHideTimer = setTimeout(() => { if (dictation.state === 'idle') overlayState('hidden'); }, 2500);
+  if (assistantEnded) hideAssistant(2500);
 });
 
 // text: a typed task for the --agent test mode, used instead of transcribing wav.
@@ -1180,6 +1195,7 @@ async function runAgentFile(arg) {
         ipcMain.once('assistant:idle', () => { clearTimeout(t); console.log(`[voice finished +${Date.now() - started}ms]`); resolve(); });
       });
     }
+    await new Promise((res) => setTimeout(res, 3500)); // lets the card's hide timer run
     app.exit(r?.success ? 0 : 1);
   } catch (err) {
     process.stderr.write(`ERROR: ${err.message}\n`);
