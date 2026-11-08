@@ -25,6 +25,7 @@
   },
   "build": {
     "appId": "com.josephivgi.jvoice",
+    "electronDist": "node_modules/electron/dist",
     "productName": "JVoice",
     "directories": {
       "output": "dist"
