@@ -821,7 +821,7 @@ function renderSettings() {
   rate.value = [...rate.options].find((o) => Number(o.value) === settings.agentRate).value;
   $('agentVoice').disabled = !settings.agentSpeak;
   rate.disabled = !settings.agentSpeak;
-  $('cmdHelp').textContent = { ask: 'JVoice shows each command and runs it only if you say yes.', allow: 'Commands run without asking. Only for tasks you trust.', off: 'The agent only uses the mouse and keyboard.' }[settings.agentCommands];
+  $('cmdHelp').textContent = { ask: 'JVoice shows each command, script or program file and runs it only if you say yes.', allow: 'Commands and program files run without asking. Only for tasks you trust.', off: 'The agent only uses the mouse and keyboard, and opens apps from the Start menu.' }[settings.agentCommands];
   $('hkKeys').replaceChildren(keycaps(settings.hotkeyLabel));
   setRadio('[data-mode]', 'mode', settings.hotkeyMode);
   $('hkHelp').textContent = settings.hotkeyMode === 'hold' ? 'Hold to record, let go to finish. Esc cancels.' : 'Press once to start, again to finish. Esc cancels.';

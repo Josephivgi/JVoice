@@ -30,9 +30,9 @@ JVoice runs in the tray. Closing the window keeps it running; quit from the tray
 - **Dictionary**: words JVoice should always spell your way, and what the speech engine writes instead.
 - **History**: every dictation, the raw transcript, and Retry for recordings that failed to transcribe.
 
-### Agent mode (beta)
+### Agent mode (optional)
 
-Only in dev copies and `-beta` builds. Switch between **Voice** and **Agent** on Home, in Settings > Mode, or from the tray menu. Voice is the default.
+Agent mode is off until you turn it on. Switch between **Speech to text** and **Agent** on Home, in Settings > Mode, or from the tray menu. Speech to text is the default.
 
 In Agent mode JVoice is a voice assistant. Talk to it, and it answers out loud and does things for you. What you say goes with a screenshot to the agent model (Claude Haiku 5.5 by default, for speed, through your OpenRouter key), which:
 
@@ -45,6 +45,7 @@ In Agent mode JVoice is a voice assistant. Talk to it, and it answers out loud a
 A card above the taskbar shows what you said, what JVoice is saying and what it is doing. Replies are spoken with a Windows voice as they stream in, so the first sentence plays before the model has finished. Pick the voice and speed in Settings > Mode, or turn off Talk back. Follow ups within 3 minutes remember the conversation ("now turn it up").
 
 Press **Esc** to stop the agent or its voice. Holding the shortcut again also interrupts it. Runs are saved in History.
+
 ### Speed test
 
 Open **Speed test**, pick a length (30 seconds up to 1 hour, a custom length up to 3 hours, or no limit), press **Start test** and talk. JVoice shows your words per minute and characters per minute while you talk, and the final result when the time is up or you press Stop.

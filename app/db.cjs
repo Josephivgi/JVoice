@@ -24,7 +24,7 @@ const DEFAULTS = {
   lastVersion: '', // the version that ran last, so the first start after an update can say what changed
   updateNotes: '', // notes of the update being installed, saved just before the restart
   speedLength: 60, // speed test length in seconds; 0 = until the user stops
-  mode: 'voice', // 'voice' types what you say | 'agent' does what you say (beta builds only)
+  mode: 'voice', // 'voice' types what you say | 'agent' does what you say (optional, off by default)
   agentModel: 'anthropic/claude-haiku-5.5', // needs image input and tool calls; a fast model keeps replies quick
   agentCommands: 'ask', // PowerShell commands in Agent mode: 'ask' | 'allow' | 'off'
   agentSpeak: true, // the assistant says its replies out loud

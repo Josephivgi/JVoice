@@ -504,7 +504,9 @@ function findStartApp(list, name) {
   return by((x) => x === n) || by((x) => x.startsWith(`${n} `) || x.startsWith(n)) || (n.length >= 4 ? by((x) => x.includes(n)) : null);
 }
 const OPEN_SCHEMES = /^(https?|mailto|ms-settings|ms-windows-store|spotify|steam|discord|msteams|slack|zoommtg|calculator|ms-clock|ms-photos|onenote|outlookmail|microsoft-edge):/i;
-const SCRIPT_EXT = new Set(['.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi', '.reg', '.hta', '.scr', '.com', '.cpl']);
+// Files that run code when opened. Opening one asks first (or is refused when commands are off), so a
+// web page or document on screen cannot talk the agent into starting a downloaded program.
+const SCRIPT_EXT = new Set(['.exe', '.pif', '.jar', '.msc', '.appref-ms', '.application', '.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi', '.msix', '.appx', '.reg', '.hta', '.scr', '.com', '.cpl']);
 const SHELL_APPS = new Set(['cmd', 'powershell', 'pwsh', 'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32', 'reg', 'regedit', 'bash', 'wsl']);
 
 // The real computer for agent.cjs: the screen the cursor was on, the mouse and keyboard, PowerShell.
@@ -514,7 +516,7 @@ function agentIo({ signal, target, say = () => {} }) {
   let map = null; // screenshot pixels -> physical screen pixels
   const toScreen = (x, y) => [map.x + (x + 0.5) * map.sx, map.y + (y + 0.5) * map.sy];
   // Our own key presses must not read as the user pressing Esc to stop the agent.
-  const quiet = async (fn) => { hotkey.muteUntil = Date.now() + 5000; try { return fn(); } finally { hotkey.muteUntil = Date.now() + 400; } };
+  const quiet = async (fn) => { hotkey.muteUntil = Date.now() + 5000; try { return await fn(); } finally { hotkey.muteUntil = Date.now() + 400; } };
   const need = () => { if (!win32) throw new Error('Mouse and keyboard control is not available.'); };
   // Asks before something that runs code (commands, scripts), unless commands are set to always allow.
   const allowed = async (message, detail) => {
