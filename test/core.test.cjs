@@ -217,3 +217,9 @@ test('length limit trims at a sentence or word and never splits emoji', () => {
   assert.ok(!capLength('😀'.repeat(200), 128).includes('\uFFFD'));
   assert.match(buildSystemPrompt({ style: 'clean', customPrompt: '', terms: [], charLimit: 280 }), /at most 280 characters/);
 });
+
+test('every AI request lists a backup model with no content check', () => {
+  const { route } = require('../app/openrouter.cjs');
+  assert.deepEqual(route('anthropic/claude-haiku-5.5'), { model: 'anthropic/claude-haiku-5.5', models: ['anthropic/claude-haiku-5.5', 'google/gemini-3.8-flash'] });
+  assert.deepEqual(route('google/gemini-3.8-flash').models, ['google/gemini-3.8-flash', 'deepseek/deepseek-v4.1-flash']);
+});

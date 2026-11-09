@@ -793,11 +793,12 @@ document.querySelectorAll('[role="radiogroup"]').forEach(radioKeys);
 
 // Agent models: each can see screenshots and call tools on OpenRouter.
 const AGENT_MODELS = [
-  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5 (fastest, default)'],
-  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5 (smarter, slower)'],
-  ['anthropic/claude-opus-5.5', 'Claude Opus 5.5 (smartest, slowest)'],
-  ['google/gemini-3.8-flash', 'Gemini 3.8 Flash'],
-  ['openai/gpt-5.6-terra', 'GPT-5.6 Terra'],
+  // "content check": OpenRouter screens these requests and can block one by mistake (JVoice then falls back).
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5 (fastest, default, content check)'],
+  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5 (smarter, slower, content check)'],
+  ['anthropic/claude-opus-5.5', 'Claude Opus 5.5 (smartest, slowest, content check)'],
+  ['google/gemini-3.8-flash', 'Gemini 3.8 Flash (no content check)'],
+  ['openai/gpt-5.6-terra', 'GPT-5.6 Terra (content check)'],
 ];
 function renderSettings() {
   if (!settings) return;
@@ -950,7 +951,7 @@ function renderPrice() {
   const m = models.find((x) => x.id === (typed || settings.aiModel));
   if (!m) { $('aiPrice').textContent = modelsState === 'loading' ? 'Loading models…' : 'Type to search every OpenRouter chat model.'; return; }
   const per = (p) => `$${(p * 1e6).toFixed(2)}`;
-  const price = `${per(m.prompt)} in, ${per(m.completion)} out per million tokens.`;
+  const price = `${per(m.prompt)} in, ${per(m.completion)} out per million tokens.${m.moderated ? ' OpenRouter runs a content check on this model. If it blocks a request, JVoice uses a backup model.' : ''}`;
   $('aiPrice').textContent = pickOther ? `${m.name}. ${price}` : price; // the preset list already names it
 }
 async function loadModels(force = false) {

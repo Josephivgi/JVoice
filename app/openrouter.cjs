@@ -110,9 +110,17 @@ const improveTimeout = (text) => Math.min(60000, 10000 + String(text).length * 8
 // Models that refused reasoning off (some only run with reasoning). Kept for this session.
 const mustReason = new Set();
 
+// OpenRouter runs a content check on some models (all Anthropic and most OpenAI ones), and a harmless
+// screenshot or sentence is sometimes flagged. Each request lists a second model that has no content
+// check; OpenRouter answers with it, in the same request, when the first is flagged or down.
+// Both read images and call tools, so they also work for Agent mode.
+const FALLBACKS = ['google/gemini-3.8-flash', 'deepseek/deepseek-v4.1-flash'];
+const fallbackFor = (model) => FALLBACKS.find((m) => m !== model);
+const route = (model) => ({ model, models: [model, fallbackFor(model)] });
+
 async function improve({ key, model, text, style, customPrompt = '', terms = [], charLimit = 0, signal }) {
   const body = {
-    model,
+    ...route(model),
     temperature: 0.2,
     messages: [
       { role: 'system', content: buildSystemPrompt({ style, customPrompt, terms, charLimit }) },
@@ -153,7 +161,7 @@ async function improve({ key, model, text, style, customPrompt = '', terms = [],
 async function chat({ key, model, messages, tools, signal, timeoutMs = 120000 }) {
   const json = await request('/chat/completions', {
     key, method: 'POST', timeoutMs, signal,
-    body: { model, messages, tools, tool_choice: 'auto', parallel_tool_calls: false, temperature: 0.2, max_tokens: 4096 },
+    body: { ...route(model), messages, tools, tool_choice: 'auto', parallel_tool_calls: false, temperature: 0.2, max_tokens: 4096 },
   });
   const message = json?.choices?.[0]?.message;
   if (!message) throw new ApiError('The AI sent an empty reply.', 0);
@@ -164,7 +172,7 @@ async function chat({ key, model, messages, tools, signal, timeoutMs = 120000 })
 // while the model is still writing. Tool calls are collected from the stream. Reasoning is turned off
 // for speed; models that refuse that are remembered and asked again with low reasoning.
 async function chatStream({ key, model, messages, tools, signal, onText = () => {}, timeoutMs = 90000 }) {
-  const body = { model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.3, max_tokens: 4096, stream: true, usage: { include: true } };
+  const body = { ...route(model), messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.3, max_tokens: 4096, stream: true, usage: { include: true } };
   for (let attempt = 0; ; attempt++) {
     const reasonOff = !mustReason.has(model);
     try {
@@ -197,7 +205,7 @@ async function streamOnce({ key, body, signal, onText, timeoutMs }) {
     try { json = JSON.parse(text); } catch { /* not JSON */ }
     throw new ApiError(friendlyError(res.status, json), res.status, isFlagged(res.status, json));
   }
-  let content = '', cost = 0, finish = '';
+  let content = '', cost = 0, finish = '', answered = ''; // answered: the model OpenRouter used (the fallback after a flag)
   const calls = []; // by index
   const decoder = new TextDecoder();
   let buf = '';
@@ -209,6 +217,7 @@ async function streamOnce({ key, body, signal, onText, timeoutMs }) {
     try { j = JSON.parse(data); } catch { return; }
     // started: some of the reply already arrived (and may have been spoken), so it must not be asked again.
     if (j.error) throw Object.assign(new ApiError(friendlyError(j.error.code || 500, j), j.error.code || 500, isFlagged(j.error.code, j)), { started: Boolean(content || calls.length) });
+    if (j.model) answered = j.model;
     if (j.usage?.cost != null) cost = Number(j.usage.cost) || 0;
     const ch = j.choices?.[0];
     if (!ch) return;
@@ -237,7 +246,7 @@ async function streamOnce({ key, body, signal, onText, timeoutMs }) {
     throw new ApiError('The connection to OpenRouter dropped. Try again.', 0);
   }
   const tool_calls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
-  return { message: { role: 'assistant', content, ...(tool_calls.length && { tool_calls }) }, cost, finish };
+  return { message: { role: 'assistant', content, ...(tool_calls.length && { tool_calls }) }, cost, finish, model: answered };
 }
 
 async function keyInfo(key) {
@@ -257,7 +266,7 @@ async function listChatModels() {
   return (json?.data ?? [])
     .filter((m) => (m.architecture?.output_modalities ?? ['text']).includes('text'))
     .filter((m) => (m.architecture?.input_modalities ?? ['text']).includes('text'))
-    .map((m) => ({ id: m.id, name: m.name || m.id, prompt: Number(m.pricing?.prompt) || 0, completion: Number(m.pricing?.completion) || 0 }))
+    .map((m) => ({ id: m.id, name: m.name || m.id, prompt: Number(m.pricing?.prompt) || 0, completion: Number(m.pricing?.completion) || 0, moderated: m.top_provider?.is_moderated === true }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -322,4 +331,4 @@ function countWords(text) {
   return m ? m.length : 0;
 }
 
-module.exports = { forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, chat, chatStream, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };
+module.exports = { route, fallbackFor, forTerminal, setFetch, improveTimeout, sanitizeOutput, isTerminal, oneLine, capLength, normalizeStyle, transcribe, improve, chat, chatStream, keyInfo, listChatModels, applyDictionary, stripSoundTags, countWords, buildSystemPrompt, ApiError };

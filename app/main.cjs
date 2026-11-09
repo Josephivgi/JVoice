@@ -702,7 +702,8 @@ async function runAgentTask({ wav, ms, signal, target, current, text = null }) {
     show();
     const history = convo && convo.model === s.agentModel && Date.now() - convo.at < agent.FOLLOW_UP_MS ? convo.history : [];
     r = await agent.runAgent({
-      chat: api.chatStream, key, model: s.agentModel, task, io, signal, history, firstShot,
+      chat: AGENT_ARG > 0 ? async (o) => { const x = await api.chatStream(o); console.log(`[answered by ${x.model}]`); return x; } : api.chatStream,
+      key, model: s.agentModel, task, io, signal, history, firstShot,
       allowCommands: s.agentCommands !== 'off',
       onStep: (label, step) => {
         view.action = step || label !== 'Listening' ? label : '';
