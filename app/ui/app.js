@@ -169,7 +169,7 @@ function renderHero() {
     : hold ? 'Hold the keys and talk' : 'Press the keys and talk';
   const out = agentOn ? 'JVoice answers out loud or does the task on your computer. Esc stops it'
     : settings.outputMode === 'paste' ? 'the text is typed wherever your cursor is' : 'the text is copied so you can paste it';
-  $('heroSub').textContent = hold ? `Let go and ${out}.` : `Press them again and ${out}.`;
+  $('heroSub').textContent = hold ? `Let go and ${out}. Or tap them once to talk hands-free, and tap again when you are done.` : `Press them again and ${out}.`;
   $('setup').hidden = settings.hasKey;
   $('homeReady').hidden = !settings.hasKey;
 }
@@ -824,7 +824,7 @@ function renderSettings() {
   $('cmdHelp').textContent = { ask: 'JVoice shows each command, script or program file and runs it only if you say yes.', allow: 'Commands and program files run without asking. Only for tasks you trust.', off: 'The agent only uses the mouse and keyboard, and opens apps from the Start menu.' }[settings.agentCommands];
   $('hkKeys').replaceChildren(keycaps(settings.hotkeyLabel));
   setRadio('[data-mode]', 'mode', settings.hotkeyMode);
-  $('hkHelp').textContent = settings.hotkeyMode === 'hold' ? 'Hold to record, let go to finish. Esc cancels.' : 'Press once to start, again to finish. Esc cancels.';
+  $('hkHelp').textContent = settings.hotkeyMode === 'hold' ? 'Hold to record, let go to finish. A quick tap records hands-free until you tap again. Esc cancels.' : 'Press once to start, again to finish. Esc cancels.';
   const stt = $('sttModel');
   if (![...stt.options].some((o) => o.value === settings.sttModel)) stt.append(el('option', { value: settings.sttModel }, settings.sttModel));
   stt.value = settings.sttModel;

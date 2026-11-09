@@ -127,7 +127,7 @@ function createMainWindow() {
     e.preventDefault();
     mainWin.hide();
     if (!store.getSettings().closeHintShown && Notification.isSupported()) {
-      new Notification({ title: 'JVoice is still running', body: `Hold ${comboLabel(hotkey.combo).join(' + ')} anywhere to dictate. Quit from the tray icon.`, icon: ICON }).show();
+      new Notification({ title: 'JVoice is still running', body: `Hold ${comboLabel(hotkey.combo).join(' + ')} anywhere to dictate, or tap it to talk hands-free. Quit from the tray icon.`, icon: ICON }).show();
       store.setSettings({ closeHintShown: true });
     }
   });
@@ -239,6 +239,7 @@ function readWav(file) { return fs.readFileSync(file); }
 // ---------- dictation pipeline ----------
 // Every recording gets a session id. Cancel bumps the id, so late replies from the recorder
 // or the network for an old session are ignored instead of touching the new one.
+const TAP_MS = 600; // a hold shorter than this (from the moment the mic is live) counts as a tap
 const dictation = {
   state: 'idle', // idle | recording | processing
   session: 0,
@@ -257,6 +258,26 @@ const dictation = {
   },
 
   toggle() { if (this.state === 'recording') this.stop(); else if (this.state === 'idle') this.start(); },
+
+  // Hold mode, combo pressed. While a hands-free recording runs, the next press ends it.
+  press() {
+    if (this.state === 'recording' && this.handsFree) this.stop();
+    else this.start();
+  },
+
+  // Hold mode, combo released. A quick tap, or letting go before the microphone was ready,
+  // keeps recording hands-free instead of failing with "too short"; the next press stops it.
+  release() {
+    if (this.state !== 'recording' || this.handsFree) return;
+    if (!this.liveAt || Date.now() - this.liveAt < TAP_MS) {
+      this.handsFree = true;
+      toOverlay('rec:handsfree', { label: `${comboLabel(hotkey.combo).join(' + ')} to stop` });
+      return;
+    }
+    this.stop();
+  },
+
+  onLive(id) { if (id === this.session && this.state === 'recording') this.liveAt = Date.now(); },
 
   start() {
     if (this.state !== 'idle') return;
@@ -277,6 +298,8 @@ const dictation = {
     this.target = win32 ? win32.foregroundWindow() : null;
     this.setState('recording');
     this.startedAt = Date.now();
+    this.liveAt = 0; // set when the microphone is actually capturing
+    this.handsFree = false;
     showOverlay();
     toOverlay('rec:start', { id, deviceId: s.micDeviceId, sounds: s.sounds, maxSeconds: s.maxRecordSeconds });
     // While the user talks: open the connection to OpenRouter and copy the clipboard, so neither
@@ -366,7 +389,7 @@ const dictation = {
     this.abort = ac;
     try {
       if (rec.error) return fail(rec.error, 3600);
-      if (rec.ms < 350) return fail('Too short. Hold the keys while you talk.', 1800);
+      if (rec.ms < 350) return fail('Too short. Nothing was recorded.', 1800);
       if (rec.peak < 0.01) {
         reportIssue('JVoice heard only silence from your microphone. Check the input device in Settings.', 'mic');
         return fail('No sound from the microphone. Check Settings.', 3000);
@@ -981,7 +1004,8 @@ function registerIpc() {
   // Overlay recorder events (fire and forget).
   ipcMain.on('rec:done', (e, rec) => { if (fromOverlay(e)) dictation.onRecorded(rec); });
   ipcMain.on('rec:error', (e, err) => { if (fromOverlay(e)) dictation.onRecorderError({ id: err?.id, message: str(err?.message ?? 'The microphone failed.', 300) }); });
-  ipcMain.on('rec:limit', (e, id) => { if (fromOverlay(e) && id === dictation.session) dictation.stop(); });
+  ipcMain.on('rec:live', (e, id) => { if (fromOverlay(e)) dictation.onLive(id); });
+ipcMain.on('rec:limit', (e, id) => { if (fromOverlay(e) && id === dictation.session) dictation.stop(); });
 }
 
 // ---------- test modes ----------
@@ -1069,6 +1093,7 @@ async function runShots(dir) {
     await loadPage(ov, 'overlay.html');
     const states = [
       ['recording', `document.getElementById('pill').dataset.state='recording';document.querySelectorAll('.wave i').forEach((b,i)=>b.style.transform='scaleY('+(0.2+0.8*Math.abs(Math.sin(i/2)))+')');document.getElementById('time').textContent='0:07'`],
+      ['handsfree', `pill.dataset.free='1';label.textContent='Ctrl + Win to stop'`],
       ['transcribing', `render('transcribing')`], ['improving', `render('improving')`],
       ['done', `render('done',{words:42,pasted:true})`], ['copied', `render('done',{words:1,pasted:false})`],
       ['error', `render('error',{message:'Your OpenRouter account is out of credits.'})`],
@@ -1266,8 +1291,8 @@ app.whenReady().then(async () => {
 
   registerIpc();
   applyHotkeySettings();
-  hotkey.on('start', () => dictation.start());
-  hotkey.on('stop', () => dictation.stop());
+  hotkey.on('start', () => (hotkey.mode === 'hold' ? dictation.press() : dictation.start()));
+  hotkey.on('stop', () => (hotkey.mode === 'hold' ? dictation.release() : dictation.stop()));
   hotkey.on('cancel', () => dictation.cancel());
   hotkey.on('interrupt', () => dictation.interrupt());
   try { hotkey.start(); } catch (err) { console.error('keyboard hook failed', err); }

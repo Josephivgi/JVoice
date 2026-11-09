@@ -9,8 +9,8 @@ const INVOKE = new Set([
   'update:state', 'update:check', 'update:restart',
   'speed:active', 'speed:transcribe', 'speed:save', 'speed:list', 'speed:delete',
 ]);
-const EVENTS = new Set(['nav', 'status', 'settings:changed', 'agent:done', 'update', 'dictation:done', 'history:changed', 'hotkey:capture', 'overlay:state', 'rec:start', 'rec:stop', 'rec:cancel', 'assistant:say', 'assistant:hush']);
-const SEND = new Set(['rec:done', 'rec:error', 'rec:limit', 'assistant:idle']);
+const EVENTS = new Set(['nav', 'status', 'settings:changed', 'agent:done', 'update', 'dictation:done', 'history:changed', 'hotkey:capture', 'overlay:state', 'rec:start', 'rec:stop', 'rec:cancel', 'rec:handsfree', 'assistant:say', 'assistant:hush']);
+const SEND = new Set(['rec:done', 'rec:error', 'rec:limit', 'rec:live', 'assistant:idle']);
 
 contextBridge.exposeInMainWorld('jvoice', {
   // Resolves with data or throws an Error carrying the main process message.

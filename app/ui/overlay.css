@@ -50,6 +50,10 @@ body { display: flex; align-items: center; justify-content: center; }
 .sub { font-size: 11px; color: var(--pill-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub:empty { display: none; }
 [data-state="recording"] .text { display: none; }
+/* Hands-free recording: a shorter wave plus how to stop it. */
+[data-state="recording"][data-free] .text { display: flex; }
+[data-state="recording"][data-free] .label { font-size: 12px; font-weight: 500; }
+[data-free] .wave i:nth-child(n+9) { display: none; }
 [data-state="error"] .label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-weight: 500; font-size: 12px; }
 
 .time { font-family: var(--mono); font-size: 12px; color: var(--pill-sub); margin-left: auto; font-variant-numeric: tabular-nums; display: none; }

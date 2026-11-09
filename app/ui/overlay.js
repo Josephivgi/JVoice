@@ -57,6 +57,7 @@ const STYLE = { clean: 'Light cleanup', rewrite: 'Rewrite' };
 const SPOKEN = { agent: 'Agent working', recording: 'Recording', transcribing: 'Transcribing', improving: 'Improving text', cancelled: 'Cancelled', updating: 'Updating JVoice. It will restart in a moment.' };
 function render(state, data = {}) {
   pill.dataset.state = state;
+  if (state !== 'recording') delete pill.dataset.free;
   sub.textContent = '';
   switch (state) {
     case 'starting': label.textContent = 'Starting microphone'; break;
@@ -98,9 +99,16 @@ function drawLevels() {
 async function start({ id, deviceId, sounds, maxSeconds }) {
   if (rec) teardown();
   const me = rec = { id, chunks: [], peak: 0, startedAt: Date.now(), requestedAt: Date.now(), sounds };
+  me.ready = new Promise((res) => { me.markReady = res; }); // settles when the mic is live or failed
   const fail = (message) => window.jvoice.send('rec:error', { id, message });
   levels.fill(0);
+  delete pill.dataset.free;
   render('starting');
+  try { await open(me, { deviceId, maxSeconds, fail }); } finally { me.markReady(); }
+}
+
+async function open(me, { deviceId, maxSeconds, fail }) {
+  const { id } = me;
   try {
     // Open the mic and wake the audio engine at the same time.
     const [stream, ctx] = await Promise.all([
@@ -132,6 +140,7 @@ async function start({ id, deviceId, sounds, maxSeconds }) {
     me.node = node; me.src = src;
     me.startedAt = Date.now();
     render('recording');
+    window.jvoice.send('rec:live', id);
     beep('start', me.sounds);
     me.raf = requestAnimationFrame(drawLevels);
     me.limitTimer = setTimeout(() => window.jvoice.send('rec:limit', id), (maxSeconds || 600) * 1000);
@@ -170,7 +179,10 @@ function teardown() {
 async function stop({ id }) {
   const r = rec;
   if (!r || r.id !== id) { window.jvoice.send('rec:done', { id, error: 'The microphone never started.' }); return; }
-  if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone was still starting. Hold the keys a little longer.' }); return; }
+  // Stopped while the mic was still opening: wait for it rather than throwing the recording away.
+  if (!r.node) await Promise.race([r.ready, new Promise((res) => setTimeout(res, 4000))]);
+  if (rec !== r) { window.jvoice.send('rec:done', { id, cancelled: true }); return; }
+  if (!r.node) { teardown(); window.jvoice.send('rec:done', { id, error: 'The microphone took too long to start. Try again.' }); return; }
   // Ask the worklet for its partial buffer and wait for it (or give up after 300 ms).
   await new Promise((res) => { r.flushed = res; r.node.port.postMessage('flush'); setTimeout(res, 300); });
   if (rec !== r) { window.jvoice.send('rec:done', { id, cancelled: true }); return; } // tells main the recorder is alive
@@ -185,6 +197,13 @@ async function stop({ id }) {
 window.jvoice.on('rec:start', start);
 window.jvoice.on('rec:stop', stop);
 window.jvoice.on('rec:cancel', () => { teardown(); });
+// Hands-free: the keys were tapped, so recording continues until the next press.
+window.jvoice.on('rec:handsfree', ({ label: text }) => {
+  if (!rec) return;
+  pill.dataset.free = '1';
+  label.textContent = text;
+  live.textContent = `Recording hands-free. ${text}.`;
+});
 window.jvoice.on('overlay:state', ({ state, ...data }) => {
   if (state === 'assistant') { renderCard(data); return; }
   hideCard();
