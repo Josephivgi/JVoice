@@ -65,6 +65,26 @@ test('a question is one model call, answered out loud, with no actions', async (
   assert.deepEqual(log, ['shot 0', 'say Paris is the capital of France.', 'say Anything else?']);
 });
 
+test('a request blocked by the content check is asked again without screenshots', async () => {
+  const log = [];
+  const sent = [];
+  const turns = [
+    async () => { throw Object.assign(new Error('blocked'), { status: 403, flagged: true }); },
+    reply('Hi there.'),
+  ];
+  const chat = async (o) => { sent.push(JSON.stringify(o.messages)); return turns.shift()(o); };
+  const r = await runAgent({ chat, task: 'say hi', io: fakeIo(log) });
+  assert.equal(r.success, true);
+  assert.equal(r.summary, 'Hi there.');
+  assert.match(sent[0], /image_url/);
+  assert.doesNotMatch(sent[1], /image_url/);
+});
+
+test('other errors are not retried', async () => {
+  const chat = async () => { throw Object.assign(new Error('bad key'), { status: 401 }); };
+  await assert.rejects(runAgent({ chat, task: 'say hi', io: fakeIo([]) }), /bad key/);
+});
+
 test('several actions run in one turn with one screenshot after them; text with no tool ends it', async () => {
   const log = [];
   const chat = script(

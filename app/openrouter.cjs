@@ -8,11 +8,19 @@ let fetchImpl = (...a) => fetch(...a);
 const setFetch = (fn) => { fetchImpl = fn; };
 
 class ApiError extends Error {
-  constructor(message, status) { super(message); this.status = status; }
+  constructor(message, status, flagged = false) { super(message); this.status = status; this.flagged = flagged; }
 }
+
+// A 403 from OpenRouter's content check (moderation), as opposed to a disabled key or spend limit.
+const isFlagged = (status, body) => Number(status) === 403
+  && (Array.isArray(body?.error?.metadata?.reasons) || /flag|moderat/i.test(body?.error?.message || body?.message || ''));
 
 function friendlyError(status, body) {
   const detail = body?.error?.message || body?.message || '';
+  if (isFlagged(status, body)) {
+    const reasons = (body?.error?.metadata?.reasons || []).join(', ');
+    return `OpenRouter's content check blocked this request${reasons ? ` (${reasons})` : ''}. Try again, or pick another model in Settings.`;
+  }
   switch (status) {
     case 400: return `OpenRouter rejected the request${detail ? `: ${detail}` : '.'}`;
     case 401: return 'Your OpenRouter key is not valid. Check it in Settings.';
@@ -45,8 +53,8 @@ async function request(path, { key, method = 'GET', body, timeoutMs = 60000, sig
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
-  if (!res.ok) throw new ApiError(friendlyError(res.status, json), res.status);
-  if (json?.error) throw new ApiError(friendlyError(json.error.code || 500, json), json.error.code || 500);
+  if (!res.ok) throw new ApiError(friendlyError(res.status, json), res.status, isFlagged(res.status, json));
+  if (json?.error) throw new ApiError(friendlyError(json.error.code || 500, json), json.error.code || 500, isFlagged(json.error.code, json));
   return json;
 }
 
@@ -187,7 +195,7 @@ async function streamOnce({ key, body, signal, onText, timeoutMs }) {
     const text = await res.text().catch(() => '');
     let json = null;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    throw new ApiError(friendlyError(res.status, json), res.status);
+    throw new ApiError(friendlyError(res.status, json), res.status, isFlagged(res.status, json));
   }
   let content = '', cost = 0, finish = '';
   const calls = []; // by index
@@ -199,7 +207,8 @@ async function streamOnce({ key, body, signal, onText, timeoutMs }) {
     if (!data || data === '[DONE]') return;
     let j;
     try { j = JSON.parse(data); } catch { return; }
-    if (j.error) throw Object.assign(new ApiError(friendlyError(j.error.code || 500, j), j.error.code || 500), { started: true });
+    // started: some of the reply already arrived (and may have been spoken), so it must not be asked again.
+    if (j.error) throw Object.assign(new ApiError(friendlyError(j.error.code || 500, j), j.error.code || 500, isFlagged(j.error.code, j)), { started: Boolean(content || calls.length) });
     if (j.usage?.cost != null) cost = Number(j.usage.cost) || 0;
     const ch = j.choices?.[0];
     if (!ch) return;

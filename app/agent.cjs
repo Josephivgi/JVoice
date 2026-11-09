@@ -192,10 +192,19 @@ async function runAgent({
     onStep(steps ? 'Thinking' : 'Listening', steps);
     const sentencer = makeSentencer(say);
     let turnText = '';
-    const r = await chat({
-      key, model, messages: pruneImages(messages), tools: toolList, signal,
+    const ask = (msgs) => chat({
+      key, model, messages: msgs, tools: toolList, signal,
       onText: (d) => { turnText += d; sentencer.push(d); onText(d, turnText); },
     });
+    let r;
+    try {
+      r = await ask(pruneImages(messages));
+    } catch (err) {
+      // OpenRouter's content check can flag a screenshot (whatever happens to be on screen).
+      // Ask again without any screenshots so a spoken request still gets an answer.
+      if (!err.flagged || err.started) throw err;
+      r = await ask(pruneImages(messages, 0));
+    }
     sentencer.flush();
     cost += r.cost || 0;
     const msg = r.message;
